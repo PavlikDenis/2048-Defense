@@ -1,0 +1,1941 @@
+<!--
+  2048 Оборона / 2048 Defence
+  Copyright (c) 2026 PavlikDenis (https://github.com/PavlikDenis)
+
+  Эта игра распространяется по лицензии
+  Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0).
+
+  Разрешено:   свободно играть, распространять, копировать и изменять.
+  Обязательно: указывать автора оригинала — PavlikDenis.
+  Запрещено:   любое коммерческое использование (продажа, монетизация,
+               встраивание рекламы от своего имени и т.п.) без отдельного
+               письменного разрешения автора.
+
+  Полный текст лицензии: https://creativecommons.org/licenses/by-nc/4.0/
+  Исходный репозиторий:  https://github.com/PavlikDenis/ (укажи ссылку на свой репозиторий)
+
+  ---
+  This game is licensed under
+  Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0).
+
+  You MAY:      play, share, copy and modify this game freely.
+  You MUST:     credit the original author — PavlikDenis.
+  You MAY NOT:  use it commercially (sell it, monetize it, add your own
+                ads, etc.) without the author's separate written permission.
+
+  Full license text: https://creativecommons.org/licenses/by-nc/4.0/
+-->
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>2048 Оборона | 2048 Defence</title>
+<!-- п.1.1 / п.1.19.1: SDK подключается строго через CDN Яндекса -->
+<script src="https://yandex.ru/games/sdk/v2"></script>
+<style>
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;overflow:hidden;background:#1a1a2e;
+  touch-action:none;
+  /* п.1.10.2 — запрет браузерного overscroll и pull-to-refresh */
+  overscroll-behavior:none;
+  user-select:none;-webkit-user-select:none;-moz-user-select:none;-ms-user-select:none;
+  /* п.1.6.1.8 — iOS long tap: запрет системного callout и выделения */
+  -webkit-touch-callout:none;}
+canvas{display:block;width:100vw;height:100vh;
+  /* п.1.6.1.8 — явно на canvas тоже */
+  -webkit-touch-callout:none;user-select:none;-webkit-user-select:none;}
+</style>
+</head>
+<body>
+<canvas id="gameCanvas"></canvas>
+<script>
+'use strict';
+
+/* ── DEV MOCK ──────────────────────────────────────────── */
+if(typeof YaGames==='undefined'){
+  window.YaGames={init:async()=>({
+    adv:{
+      showFullscreenAdv:({callbacks})=>{
+        callbacks.onOpen&&callbacks.onOpen();
+        setTimeout(()=>callbacks.onClose(true),180);
+      },
+      showRewardedVideo:({callbacks})=>{
+        callbacks.onOpen&&callbacks.onOpen();
+        setTimeout(()=>{callbacks.onRewarded();callbacks.onClose();},220);
+      },
+      showBannerAdv:async()=>{}, getBannerAdvStatus:async()=>({stickyAdvIsShowing:false})
+    },
+    auth:{openAuthDialog:async()=>{}},
+    getPlayer:async()=>({
+      getMode:()=>'',getName:()=>'Dev',getUniqueID:()=>'dev-001',
+      getData:async()=>({}),setData:async()=>{}
+    }),
+    getLeaderboards:async()=>({
+      setLeaderboardScore:async()=>{},
+      getLeaderboardEntries:async()=>({entries:[]})
+    }),
+    /* п. 1.19 — LoadingAPI mock */
+    features:{
+      GameplayAPI:{start:()=>{},stop:()=>{}},
+      LoadingAPI:{ready:()=>{console.log('[DEV] LoadingAPI.ready() called');}}
+    },
+    /* п. 2.14 — i18n mock */
+    environment:{i18n:{lang:'ru'}},
+    /* п. 1.19.4 — on/off для game_api_pause/resume */
+    on:(ev,cb)=>{console.log(`[DEV] ysdk.on(${ev})`);},
+    off:(ev,cb)=>{console.log(`[DEV] ysdk.off(${ev})`);}
+  })};
+}
+
+/* ── COIN ICON (drawn, not emoji — fixes missing 🪙 glyph) ──── */
+function drawCoinIcon(c,cx,cy,r){
+  c.beginPath();c.arc(cx,cy,r,0,Math.PI*2);
+  c.fillStyle='#ffd700';c.fill();
+  c.lineWidth=Math.max(1,r*0.18);c.strokeStyle='#a8780a';c.stroke();
+  c.beginPath();c.arc(cx,cy,r*0.68,0,Math.PI*2);
+  c.strokeStyle='rgba(255,255,255,0.35)';c.lineWidth=Math.max(1,r*0.10);c.stroke();
+  c.fillStyle='#a8780a';c.font=`bold ${Math.round(r*1.15)}px Arial`;
+  c.textAlign='center';c.textBaseline='middle';
+  c.fillText('$',cx,cy+r*0.04);
+}
+/* Draws "[coin icon] value" with given alignment, returns total width.
+   y is the TOP of the text box, fs is the font size in px. */
+function drawCoinBadge(c,x,y,val,fs,align,color){
+  const r=fs*0.46,txt=String(val);
+  c.font=`bold ${Math.round(fs)}px Arial`;
+  const tw=c.measureText(txt).width;
+  const gapW=fs*0.22,totalW=r*2+gapW+tw;
+  let startX;
+  if(align==='right')startX=x-totalW;
+  else if(align==='center')startX=x-totalW/2;
+  else startX=x;
+  drawCoinIcon(c,startX+r,y+fs*0.5,r);
+  c.fillStyle=color||'#ffd700';
+  c.textAlign='left';c.textBaseline='top';
+  c.fillText(txt,startX+r*2+gapW,y);
+  return totalW;
+}
+function rr(c,x,y,w,h,r){
+  r=Math.min(r,w/2,h/2);c.beginPath();
+  if(typeof c.roundRect==='function')c.roundRect(x,y,w,h,r);
+  else{c.moveTo(x+r,y);c.arcTo(x+w,y,x+w,y+h,r);c.arcTo(x+w,y+h,x,y+h,r);
+       c.arcTo(x,y+h,x,y,r);c.arcTo(x,y,x+w,y,r);c.closePath();}
+}
+
+/* ── TUTORIAL STEP SPOTLIGHTS (language-independent) ──── */
+const TUT_SPOTS=['none','board','board','top','lives'];
+
+/* ══════════════════════════════════════════════════════════
+   TRANSLATIONS
+══════════════════════════════════════════════════════════ */
+const TR={
+  ru:{
+    /* п.5.1.3 — название должно точно совпадать с полем «Название» в русском черновике */
+    gameTitle:'2048 Оборона',
+    /* п.8.2.3 — имя по умолчанию (не авторизован) на языке игры */
+    playerDefault:'Игрок',
+    /* system */
+    loading:'Загрузка…',
+    /* HUD */
+    score:'ОЧКИ', best:'РЕКОРД',
+    signin:'🔑 Войти',
+    swipeHint:'← Свайпай для начала →',
+    verified:(n)=>`${n} ✓`,
+    /* menu buttons */
+    resume:'▶ Продолжить',
+    newGame:'↺ Новая игра',
+    showTut:'❓ Туториал',
+    signInSave:'🔑 Войти (сохранить прогресс)',
+    soundOn:'🔊 Звук: ВКЛ', soundOff:'🔇 Звук: ВЫКЛ',
+    /* п.6.9 рек. — язык обозначен названием на самом языке */
+    langBtn:'🌐 Русский → English',
+    coins:'МОНЕТЫ',
+    /* shop */
+    shopTitle:'🛒 Магазин',
+    shopBuy1:'+1 ❤ — 10', shopBuy2:'+3 ❤ — 20',
+    shopBuy1Full:'+1 ❤ запасное сердце',
+    shopBuy2Full:'+3 ❤ запасных сердца',
+    shopBalance:'Баланс', shopBack:'← Назад',
+    bonusLabel:(n)=>`Запас: +${n} ❤`,
+    bonusUsedLabel:(n)=>`из них ${n} ❤ из запаса`,
+    bonusStock:'Запас',
+    adLabel:'Реклама',
+    /* profile stats */
+    statBest:'Рекорд', statGames:'Игр',
+    statMerges:'Слияний', statMax:'Макс.',
+    timeFmt:(s)=>s<3600
+      ?`${(s/60)|0}м ${s%60}с в игре`
+      :`${(s/3600)|0}ч ${((s%3600)/60)|0}м в игре`,
+    /* game over / ad flow */
+    gameOver:'КОНЕЦ ИГРЫ',
+    bestFmt:(n)=>`Рекорд: ${n}`,
+    scoreFmt:(n)=>`Очки: ${n}`,
+    lbTitle:'🏆 Таблица лидеров',
+    /* п.4.5.2 — награда = доп. бонус, НЕ возможность продолжить игру */
+    adCont:'📺 Реклама → +30 монет',
+    adReviveHint:'Смотри рекламу — получи монеты для следующей игры',
+    adLoading:'⏳ Загрузка рекламы…',
+    adSkipHint:'Пропустить → начнётся реклама перед новой игрой',
+    /* NEW: 2048-tile win celebration */
+    winTitle:'🎉 2048!',
+    winText:'Вы собрали плитку 2048!',
+    winBonus:(n)=>`Бонус: +${n} 🪙`,
+    winClose:'Продолжить игру',
+    /* п.2.2 — описание управления */
+    controlsDesktop:'⌨ WASD / ↑↓←→ — движение плиток',
+    controlsMobile:'👆 Свайп — движение плиток',
+    /* tutorial */
+    tutNext:'Далее →', tutPlay:'🎮 Начать игру!',
+    tutCounter:(c,t)=>`${c}/${t}`,
+    tutSteps:[
+      {title:'👋 Добро пожаловать!',
+       lines:['2048 Оборона — соединяй числа на поле 6×6','и защищайся от красных врагов!']},
+      {title:'↔ Движение плиток',
+       lines:['Свайпай в любую сторону — все плитки','сдвигаются до упора в этом направлении.']},
+      {title:'✨ Слияние',
+       lines:['Одинаковые числа сливаются и удваиваются','— за это начисляются очки!']},
+      {title:'⚠ Красные кубы-враги',
+       lines:['Враг СЛАБЕЕ плитки → он исчезает ✓','Враг СИЛЬНЕЕ или равен → плитка уменьшается ✗']},
+      {title:'❤ Жизни и цель',
+       lines:['Плитка уничтожена = потеря ❤.','0 плиток или 3 потери — игра окончена!']},
+    ],
+  },
+  en:{
+    /* п.5.1.3 — matches EN draft name exactly */
+    gameTitle:'2048 Defence',
+    playerDefault:'Player',
+    loading:'Loading…',
+    score:'SCORE', best:'BEST',
+    signin:'🔑 Sign in',
+    swipeHint:'← Swipe to start →',
+    verified:(n)=>`${n} ✓`,
+    resume:'▶ Resume',
+    newGame:'↺ New Game',
+    showTut:'❓ Tutorial',
+    signInSave:'🔑 Sign in (save progress)',
+    soundOn:'🔊 Sound: ON', soundOff:'🔇 Sound: OFF',
+    /* п.6.9 рек. */
+    langBtn:'🌐 English → Русский',
+    coins:'COINS',
+    shopTitle:'🛒 Shop',
+    shopBuy1:'+1 ❤ — 10', shopBuy2:'+3 ❤ — 20',
+    shopBuy1Full:'+1 ❤ bonus heart',
+    shopBuy2Full:'+3 ❤ bonus hearts',
+    shopBalance:'Balance', shopBack:'← Back',
+    bonusLabel:(n)=>`Stock: +${n} ❤`,
+    bonusUsedLabel:(n)=>`incl. ${n} ❤ from stock`,
+    bonusStock:'Stock',
+    adLabel:'Ad',
+    statBest:'Best', statGames:'Games',
+    statMerges:'Merges', statMax:'Max.',
+    timeFmt:(s)=>s<3600
+      ?`${(s/60)|0}m ${s%60}s played`
+      :`${(s/3600)|0}h ${((s%3600)/60)|0}m played`,
+    /* game over / ad flow */
+    gameOver:'GAME OVER',
+    bestFmt:(n)=>`Best: ${n}`,
+    scoreFmt:(n)=>`Score: ${n}`,
+    lbTitle:'🏆 Leaderboard',
+    /* п.4.5.2 — reward = bonus only, NOT ability to continue the game */
+    adCont:'📺 Watch Ad → +30 Coins',
+    adReviveHint:'Watch ad to earn bonus coins for your next game',
+    adLoading:'⏳ Loading ad…',
+    adSkipHint:'Skip → an ad will play before the new game',
+    winTitle:'🎉 2048!',
+    winText:'You reached the 2048 tile!',
+    winBonus:(n)=>`Bonus: +${n} 🪙`,
+    winClose:'Keep Playing',
+    /* п.2.2 */
+    controlsDesktop:'⌨ WASD / ↑↓←→ — move tiles',
+    controlsMobile:'👆 Swipe — move tiles',
+    tutNext:'Next →', tutPlay:'🎮 Start Game!',
+    tutCounter:(c,t)=>`${c}/${t}`,
+    tutSteps:[
+      {title:'👋 Welcome!',
+       lines:['2048 Defence — merge numbers on a 6×6 grid','and defend against red enemy cubes!']},
+      {title:'↔ Move Tiles',
+       lines:['Swipe in any direction — all tiles slide','as far as they can go!']},
+      {title:'✨ Merge',
+       lines:['Same numbers merge and double','— that earns you points!']},
+      {title:'⚠ Red Enemy Cubes',
+       lines:['Enemy WEAKER than tile → vanishes ✓','Enemy STRONGER or equal → tile shrinks ✗']},
+      {title:'❤ Lives & Goal',
+       lines:['Tile destroyed = lose a ❤.','0 tiles or 3 losses = game over!']},
+    ],
+  },
+};
+
+/* ══════════════════════════════════════════════════════════
+   GAME CLASS
+══════════════════════════════════════════════════════════ */
+class Game{
+  constructor(){
+    this.canvas=document.getElementById('gameCanvas');
+    this.ctx=this.canvas.getContext('2d');
+    this.W=this.H=0;
+    /* SDK */
+    this.sdk=null;this.player=null;
+    this.isAuthorized=false;this.playerName='';this.playerId='';
+    /* State */
+    this.state='loading';this.menuOpen=false;this.shopOpen=false;
+    /* Tutorial */
+    this.tutActive=false;this.tutStep=0;this.tutTime=0;this.tutDone=false;
+    /* Flags */
+    this.restarting=false;this.usedRevive=false;this.gpStarted=false;
+    /* adPending: true пока реклама грузится/показывается → блокирует повторные клики */
+    this.adPending=false;
+    /* NEW: 2048-tile win celebration */
+    this.win2048Shown=false;   // per-game: don't repeat the popup
+    this.win2048Popup=false;   // currently displaying the popup
+    this.firstSwipeDone=false;
+    /* Score/lives/time */
+    this.score=0;this.lives=3;this.gameTime=0;
+    this.roundStartBonusHearts=0; // сколько бонусных сердец выдано на этот раунд (0-3)
+    /* Stats */
+    this.stats={best:0,gamesPlayed:0,merges:0,maxTile:2,totalTimeSec:0,coins:0,bonusLives:0};
+    this.coinsBase=0; // floor(score/100) baseline for coin awarding
+    /* Language */
+    this.lang='ru';
+    /* Grid 6×6 */
+    this.G=6;
+    this.grid=[];this.vtiles=[];this.pendingGrid=null;this.pendingMergePos=new Set();
+    /* Animation */
+    this.animating=false;this.animT=110;this.animProg=0;
+    /* Enemies */
+    this.enemies=[];this.eTimer=0;this.eInterval=3500;this.eSpeed=48;
+    /* Effects / audio */
+    this.fx=[];this.aud=null;this.audOk=false;this.soundOn=true;
+    /* Controls */
+    this.txStart=this.tyStart=0;this.ctrlsOk=false;
+    this.menuBtnRect=null;this.authBtnRect=null;
+    this.menuButtons=[];this.goButtons=[];this.shopButtons=[];
+    /* Leaderboard */
+    this.lbEntries=[];
+    /* Layout */
+    this.bSize=this.cSize=this.bX=this.bY=0;this.lastTime=0;
+    /* п.1.6.2.2 — ограничение активного поля: длинная сторона ≤ 2× короткой */
+    this.effW=0;this.effX=0;
+    this.init();
+  }
+
+  /* Translation helper */
+  t(key,...args){
+    const d=TR[this.lang]||TR.ru;
+    const v=(d[key]!==undefined)?d[key]:TR.ru[key];
+    if(v===undefined)return key;
+    return typeof v==='function'?v(...args):v;
+  }
+
+  /* Переключение языка.
+     п.5.1.3 — document.title обновляется вместе с языком,
+     чтобы название в браузерной вкладке совпадало с именем
+     в соответствующем черновике Яндекс Игр. */
+  setLang(l){
+    if(l!=='en'&&l!=='ru')return;
+    this.lang=l;
+    try{document.documentElement.lang=l;}catch(e){}
+    /* обновляем заголовок вкладки на актуальное локализованное название */
+    try{document.title=this.t('gameTitle');}catch(e){}
+  }
+
+  /* п. 2.14 — auto-detect locale via SDK environment.i18n.lang,
+     falling back to navigator.language, then to 'ru'. */
+  detectLang(){
+    try{
+      const sdkLang=this.sdk?.environment?.i18n?.lang;
+      if(sdkLang){
+        const l=sdkLang.toLowerCase().startsWith('en')?'en':'ru';
+        this.setLang(l);return;
+      }
+    }catch(e){}
+    try{
+      const nav=(navigator.language||navigator.userLanguage||'ru').toLowerCase();
+      this.setLang(nav.startsWith('en')?'en':'ru');
+    }catch(e){}
+  }
+
+  /* ── INIT ──────────────────────────────── */
+  async init(){
+    this.resize();
+    window.addEventListener('resize',()=>this.resize());
+    this.createGrid();this.initControls();this.loadLocal();
+    await this.initSDK();
+    requestAnimationFrame(t=>this.loop(t));
+  }
+
+  async initSDK(){
+    try{
+      this.sdk=await YaGames.init();
+      /* п. 2.14 — auto-detect language immediately after SDK ready */
+      this.detectLang();
+      /* п. 1.19.4 — подписка на паузу/возобновление от платформы (напр., при показе рекламы) */
+      try{
+        this.sdk.on('game_api_pause',()=>{
+          try{if(this.aud&&this.aud.state==='running')this.aud.suspend();}catch(e){}
+          this.stopGP();
+        });
+        this.sdk.on('game_api_resume',()=>{
+          try{if(this.aud&&this.aud.state==='suspended'&&this.audOk&&this.soundOn)this.aud.resume();}catch(e){}
+          if(this.state==='playing'&&!this.menuOpen&&!this.shopOpen&&!this.win2048Popup&&!this.tutActive)
+            this.startGP();
+        });
+      }catch(e){}
+      try{
+        this.player=await this.sdk.getPlayer({scopes:false});
+        this.isAuthorized=this.player.getMode()!=='lite';
+        this.playerName=this.player.getName()||'';
+        this.playerId=this.player.getUniqueID()||'';
+        if(this.isAuthorized)await this.loadCloud();
+      }catch(e){console.warn('Player:',e);}
+      /* п. 1.19 — GameReady API: signal to platform that game assets
+         are loaded and the game is ready to be shown to users. */
+      try{this.sdk.features?.LoadingAPI?.ready();}catch(e){}
+      /* request sticky banner ad (platform controls position per its rules) */
+      try{this.sdk.adv?.showBannerAdv&&this.sdk.adv.showBannerAdv();}catch(e){}
+      this.showStartAd();
+    }catch(e){console.warn('SDK:',e);this.startGame();}
+  }
+
+  resize(){
+    this.canvas.width=window.innerWidth;this.canvas.height=window.innerHeight;
+    this.W=this.canvas.width;this.H=this.canvas.height;this.layout();
+  }
+
+  layout(){
+    const ph=Math.min(this.H*0.26,142);
+    this.sideMargin=0;
+    /* п.1.6.2.2 — длинная сторона активного поля ≤ 2× короткой.
+       На ultrawide (21:9, 32:9) ограничиваем игровую область H×2, центрируем.
+       HUD, кнопки и всё содержимое рисуются внутри [effX … effX+effW]. */
+    this.effW=Math.min(this.W,this.H*2);
+    this.effX=(this.W-this.effW)/2;      // смещение от левого края canvas
+    const avW=this.effW*0.96,avH=this.H-ph-26;
+    this.bSize=Math.min(avW,avH);
+    this.cSize=this.bSize/this.G;
+    this.bX=(this.W-this.bSize)/2;       // центр canvas = центр effW (симметрично)
+    this.bY=ph+(avH-this.bSize)/2+8;
+  }
+
+  /* ── AUDIO ─────────────────────────────── */
+  unlockAudio(){
+    if(this.audOk)return;
+    try{
+      const AC=window.AudioContext||window.webkitAudioContext;if(!AC)return;
+      this.aud=new AC();if(this.aud.state==='suspended')this.aud.resume();this.audOk=true;
+    }catch(e){}
+  }
+
+  sound(type){
+    if(!this.aud||!this.audOk||!this.soundOn)return;
+    try{
+      const c=this.aud,now=c.currentTime,o=c.createOscillator(),g=c.createGain();
+      o.connect(g);g.connect(c.destination);
+      const cfg={
+        swipe:['sine',220,330,0.07,0.08,0.001,0.10],
+        merge:['triangle',440,880,0.12,0.12,0.001,0.18],
+        hit:['square',150,50,0.12,0.15,0.001,0.15],
+        deflect:['sine',800,1200,0.04,0.09,0.001,0.12],
+        lifeloss:['sawtooth',200,60,0.40,0.18,0.001,0.45],
+        gameover:['sine',440,110,0.60,0.20,0.001,0.70],
+        win:['triangle',440,1100,0.45,0.16,0.001,0.55],
+        tap:['sine',600,800,0.03,0.05,0.001,0.07],
+        langSwitch:['triangle',500,700,0.06,0.10,0.001,0.14],
+      };
+      const[wv,f1,f2,dur,gS,gE,stop]=cfg[type]||cfg.swipe;
+      o.type=wv;o.frequency.setValueAtTime(f1,now);
+      o.frequency.exponentialRampToValueAtTime(f2,now+dur);
+      g.gain.setValueAtTime(gS,now);g.gain.exponentialRampToValueAtTime(gE,now+stop);
+      o.start(now);o.stop(now+stop);
+    }catch(e){}
+  }
+
+  /* ── DATA ──────────────────────────────── */
+  loadLocal(){
+    try{
+      const raw=localStorage.getItem('stats2048d');
+      if(raw){const s=JSON.parse(raw);
+        ['best','gamesPlayed','merges','maxTile','totalTimeSec','coins','bonusLives']
+          .forEach(k=>{if((s[k]||0)>this.stats[k])this.stats[k]=s[k];});}
+      this.tutDone=!!localStorage.getItem('tut2048d');
+      const sl=localStorage.getItem('lang2048d');
+      if(sl==='en'||sl==='ru')this.setLang(sl);
+    }catch(e){}
+  }
+
+  saveLocal(){
+    try{
+      localStorage.setItem('stats2048d',JSON.stringify(this.stats));
+      if(this.tutDone)localStorage.setItem('tut2048d','1');
+      localStorage.setItem('lang2048d',this.lang);
+    }catch(e){}
+  }
+
+  async loadCloud(){
+    if(!this.player||!this.isAuthorized)return;
+    try{
+      const data=await this.player.getData(['stats','tutDone','lang']);
+      if(data.stats){const s=data.stats;
+        ['best','gamesPlayed','merges','maxTile','totalTimeSec','coins','bonusLives']
+          .forEach(k=>{if((s[k]||0)>this.stats[k])this.stats[k]=s[k];});}
+      if(data.tutDone)this.tutDone=true;
+      if(data.lang==='en'||data.lang==='ru')this.setLang(data.lang);
+    }catch(e){console.warn('CloudLoad:',e);}
+  }
+
+  async saveCloud(flush=false){
+    if(!this.player||!this.isAuthorized)return;
+    try{await this.player.setData({stats:this.stats,tutDone:this.tutDone,lang:this.lang},flush);}
+    catch(e){console.warn('CloudSave:',e);}
+  }
+
+  async tryAuth(){
+    if(!this.sdk)return;
+    try{
+      await this.sdk.auth.openAuthDialog();
+      const wasAuth=this.isAuthorized;
+      this.player=await this.sdk.getPlayer({scopes:false});
+      this.isAuthorized=this.player.getMode()!=='lite';
+      this.playerName=this.player.getName()||'';
+      this.playerId=this.player.getUniqueID()||'';
+      if(this.isAuthorized&&!wasAuth){
+        await this.loadCloud();await this.saveCloud(true);await this.saveLB();
+      }
+    }catch(e){console.warn('Auth:',e);}
+  }
+
+  saveSession(){
+    try{localStorage.setItem('2048d_sess',JSON.stringify(
+      {grid:this.grid,score:this.score,lives:this.lives,gameTime:this.gameTime,t:Date.now()}
+    ));}catch(e){}
+  }
+
+  /* ── GAME FLOW ─────────────────────────── */
+  /* п.1.9 — сохраняем накопленный прогресс текущей сессии перед принудительным
+     рестартом из меню. endGame() не вызывается (нет экрана game over),
+     поэтому сохраняем вручную: время, рекорд, максимальная плитка. */
+  quickSaveStats(){
+    if(this.state!=='playing'||this.score===0)return;
+    this.stats.totalTimeSec+=Math.floor(this.gameTime/1000);
+    this.gameTime=0; // обнуляем чтобы не посчитать дважды
+    if(this.score>this.stats.best){
+      this.stats.best=this.score;
+      localStorage.setItem('best2048d',this.stats.best);
+    }
+    for(const row of this.grid)for(const v of row)
+      if(v>this.stats.maxTile)this.stats.maxTile=v;
+    this.saveLocal();this.saveCloud(false);
+  }
+
+  /* п.1.14 / п.1.9 — восстанавливает прерванную сессию (не старше 30 мин).
+     Возвращает true если сессия восстановлена. */
+  tryRestoreSession(){
+    try{
+      const raw=localStorage.getItem('2048d_sess');
+      if(!raw)return false;
+      const s=JSON.parse(raw);
+      /* не восстанавливать слишком старые сессии */
+      if(!s||!s.grid||Date.now()-s.t>30*60*1000)return false;
+      this.grid=s.grid;this.score=s.score||0;
+      this.lives=s.lives||3;this.gameTime=s.gameTime||0;
+      this.coinsBase=Math.floor(this.score/100);
+      this.rebuildVT();this.firstSwipeDone=true;
+      return true;
+    }catch(e){return false;}
+  }
+
+  startGame(restore=false){
+    this.state='playing';this.score=0;this.lives=3;this.gameTime=0;
+    this.usedRevive=false;this.restarting=false;
+    this.enemies=[];this.fx=[];this.goButtons=[];this.lbEntries=[];
+    this.eTimer=0;this.eInterval=3500;this.eSpeed=48;
+    this.animating=false;this.menuOpen=false;this.shopOpen=false;
+    this.win2048Shown=false;this.win2048Popup=false;
+    this.pendingGrid=null;this.vtiles=[];this.pendingMergePos=new Set();
+    this.firstSwipeDone=false;
+    this.coinsBase=0;this.adPending=false;
+    this.roundBonusHeartsUsed=0; // сбрасываем счётчик лимита бонусных жизней на раунд
+    /* п.1.9: попытка восстановить прерванную сессию */
+    const restored=restore&&this.tryRestoreSession();
+    if(!restored){
+      this.stats.gamesPlayed++;
+      this.createGrid();this.spawnTile();this.spawnTile();this.rebuildVT();
+      /* Фикс бонусных сердец: за ОДИН раунд из купленного запаса
+         (stats.bonusLives) можно получить максимум 3 "спасения".
+         Поэтому они списываются НАПЕРЁД, при старте раунда, и сразу
+         добавляются к стартовым жизням — а не откусываются по одному
+         во время боя без ограничения (старый баг: 10 купленных сердец
+         давали 10 спасений за раунд). */
+      const grant=Math.min(3,this.stats.bonusLives);
+      if(grant>0){
+        this.stats.bonusLives-=grant;
+        this.lives+=grant;
+        this.roundStartBonusHearts=grant; // для HUD — сколько из текущих жизней "бонусные"
+        this.saveLocal();this.saveCloud(false);
+      }else{
+        this.roundStartBonusHearts=0;
+      }
+    }else{
+      this.roundStartBonusHearts=0; // продолжение сессии — бонус уже был выдан раньше
+    }
+    /* п.1.19.3 — запускаем GameplayAPI только если туториал НЕ перекроет его немедленно.
+       Без этой проверки: startGP() → startTutorial() → stopGP() — двойной вызов в одном кадре. */
+    if(this.tutDone){
+      this.startGP();
+    }else{
+      this.startTutorial(); // startTutorial вызывает stopGP(); startGP() придёт из advanceTutorial()
+    }
+  }
+
+  endGame(){
+    if(this.state==='gameover')return;
+    this.state='gameover';this.stopGP();
+    this.stats.totalTimeSec+=Math.floor(this.gameTime/1000);
+    if(this.score>this.stats.best){
+      this.stats.best=this.score;localStorage.setItem('best2048d',this.stats.best);}
+    for(const row of this.grid)for(const v of row)if(v>this.stats.maxTile)this.stats.maxTile=v;
+    this.sound('gameover');
+    this.saveLocal();this.saveCloud(true);this.saveLB();this.fetchLB();
+    try{localStorage.removeItem('2048d_sess');}catch(e){}
+  }
+
+  checkNoTiles(){
+    let n=0;
+    for(let y=0;y<this.G;y++)for(let x=0;x<this.G;x++)if(this.grid[y][x]>0)n++;
+    if(n===0){this.endGame();return true;}
+    return false;
+  }
+
+  /* ── ADS / SDK ─────────────────────────── */
+  /* Вспомогательные: пауза/возобновление аудио + GameplayAPI */
+  pauseForAd(){
+    this.stopGP();
+    try{this.aud&&this.aud.state==='running'&&this.aud.suspend();}catch(e){}
+  }
+  resumeAfterAd(){
+    try{this.aud&&this.aud.state==='suspended'&&this.audOk&&this.aud.resume();}catch(e){}
+  }
+
+  /* ── Стартовая interstitial (один раз при запуске) ── */
+  showStartAd(){
+    /* п.1.9 — после стартовой рекламы пытаемся восстановить сессию */
+    if(!this.sdk){this.startGame(true);return;}
+    let done=false;
+    const go=()=>{if(!done){done=true;this.resumeAfterAd();this.startGame(true);}};
+    setTimeout(go,5000);
+    this.pauseForAd();
+    this.sdk.adv.showFullscreenAdv({callbacks:{
+      onOpen:()=>this.pauseForAd(),
+      onClose:go,
+      onError:go
+    }});
+  }
+
+  /* ── Interstitial между играми (game over → new game) ──────────
+     Вызывается ТОЛЬКО из goAct('restart') или handleMenuClick('newgame').
+     п.4.4: логическая пауза — экран game over уже показан.
+     п.4.7: геймплей и звук уже остановлены в pauseForAd().        */
+  showInterstitialAd(){
+    /* restarting — одноразовый флаг: не даёт показать рекламу дважды
+       если SDK вернул два колбека подряд                           */
+    if(this.restarting){this.adPending=false;return;}
+    this.restarting=true;
+
+    const go=(()=>{
+      let done=false;
+      return ()=>{
+        if(done)return;done=true;
+        this.adPending=false;
+        this.resumeAfterAd();
+        this.startGame();
+      };
+    })();
+
+    /* Таймаут-страховка: если SDK молчит — запускаем игру сами */
+    const safeguard=setTimeout(go,6000);
+
+    this.pauseForAd();
+    if(!this.sdk){
+      clearTimeout(safeguard);
+      this.adPending=false;this.resumeAfterAd();this.startGame();
+      return;
+    }
+    this.sdk.adv.showFullscreenAdv({callbacks:{
+      onOpen:()=>{
+        clearTimeout(safeguard);
+        this.pauseForAd();
+        /* Новый таймаут: если реклама открылась но onClose не пришёл */
+        setTimeout(go,30000);
+      },
+      onClose:()=>{clearTimeout(safeguard);go();},
+      onError:()=>{clearTimeout(safeguard);go();}
+    }});
+  }
+
+  /* ── Rewarded video (возрождение) ──────────────────────────────
+     п.4.5: запускается ТОЛЬКО по явной кнопке игрока.
+     onReward → игрок воскрешается.
+     onFail   → игрок закрыл без просмотра → экран game over остаётся. */
+  showRewardedAd(onReward,onFail){
+    let done=false;
+    const finish=(ok)=>{
+      if(done)return;done=true;
+      this.resumeAfterAd();
+      if(ok)onReward();else if(onFail)onFail();
+    };
+
+    if(!this.sdk){onReward();return;}
+
+    const safeguard=setTimeout(()=>finish(false),30000);
+    this.pauseForAd();
+    this.sdk.adv.showRewardedVideo({callbacks:{
+      onOpen:()=>{clearTimeout(safeguard);this.pauseForAd();},
+      onRewarded:()=>{clearTimeout(safeguard);finish(true);},
+      /* п.4.5: игрок закрыл rewarded не досмотрев → НЕ даём награду */
+      onClose:()=>{clearTimeout(safeguard);finish(false);},
+      onError:()=>{clearTimeout(safeguard);finish(false);}
+    }});
+  }
+
+  /* Совместимость: меню → новая игра тоже через interstitial */
+  showRestartAd(){
+    if(this.adPending||this.restarting)return;
+    this.adPending=true;
+    this.showInterstitialAd();
+  }
+
+  async saveLB(){
+    if(!this.sdk||this.stats.best<=0)return;
+    try{const lb=await this.sdk.getLeaderboards();await lb.setLeaderboardScore('score',this.stats.best);}
+    catch(e){console.warn('LB:',e);}
+  }
+
+  async fetchLB(){
+    if(!this.sdk)return;
+    try{
+      const lb=await this.sdk.getLeaderboards();
+      const d=await lb.getLeaderboardEntries('score',{includeUser:true,quantityAround:3,quantityTop:3});
+      this.lbEntries=d.entries||[];
+    }catch(e){this.lbEntries=[];}
+  }
+
+  startGP(){if(this.gpStarted)return;this.gpStarted=true;try{this.sdk?.features?.GameplayAPI?.start();}catch(e){}}
+  stopGP(){if(!this.gpStarted)return;this.gpStarted=false;try{this.sdk?.features?.GameplayAPI?.stop();}catch(e){}}
+
+  /* ── TUTORIAL ──────────────────────────── */
+  /* п.1.19.3 — туториал приостанавливает геймплей → stopGP() */
+  startTutorial(){this.tutActive=true;this.tutStep=0;this.tutTime=0;this.stopGP();}
+
+  advanceTutorial(){
+    this.sound('tap');this.tutStep++;this.tutTime=0;
+    if(this.tutStep>=5){
+      this.tutActive=false;this.tutDone=true;this.saveLocal();this.saveCloud(false);
+      /* п.1.19.3 — туториал завершён → возобновляем геймплей */
+      this.startGP();
+    }
+  }
+
+  /* ── MENU ──────────────────────────────── */
+  toggleMenu(){
+    this.menuOpen=!this.menuOpen;this.sound('tap');
+    if(this.menuOpen)this.stopGP();else this.startGP();
+  }
+
+  /* Проблема 2: раунд идёт с момента первого свайпа и до его завершения
+     (game over). Между раундами — пока игрок ещё не сдвинул ни одной
+     плитки в новой партии. Магазин доступен только "между раундами". */
+  isRoundActive(){
+    return this.state==='playing'&&this.firstSwipeDone;
+  }
+
+  handleMenuClick(cx,cy){
+    for(const b of this.menuButtons){
+      if(this.inRect(cx,cy,b)){
+        /* Кнопка магазина заблокирована во время раунда — клик игнорируем */
+        if(b.act==='shop'&&this.isRoundActive()){this.sound('hit');return;}
+        this.sound('tap');
+        switch(b.act){
+          case'resume':   this.toggleMenu();break;
+          case'newgame':
+            /* п.1.9 — сохраняем прогресс текущей игры перед рестартом */
+            this.quickSaveStats();
+            this.menuOpen=false;this.showRestartAd();break;
+          case'tutorial': this.menuOpen=false;this.startTutorial();break;
+          case'auth':     this.tryAuth();break;
+          case'sound':    this.soundOn=!this.soundOn;break;
+          case'lang':
+            this.setLang(this.lang==='ru'?'en':'ru');
+            localStorage.setItem('lang2048d',this.lang);
+            this.saveCloud(false);
+            this.sound('langSwitch');
+            break;
+          /* NEW: open separate shop screen — только между раундами */
+          case'shop':
+            this.shopOpen=true;
+            break;
+        }
+        return;
+      }
+    }
+    this.toggleMenu();
+  }
+
+  /* ── SHOP SCREEN CLICKS (NEW) ────────────── */
+  handleShopClick(cx,cy){
+    for(const b of this.shopButtons){
+      if(this.inRect(cx,cy,b)){
+        this.sound('tap');
+        switch(b.act){
+          case'back': this.shopOpen=false; break;
+          case'shop1':
+            if(this.stats.coins>=10){
+              this.stats.coins-=10;this.stats.bonusLives+=1;
+              this.saveLocal();this.saveCloud(true);this.sound('merge');
+            }else this.sound('hit');
+            break;
+          case'shop2':
+            if(this.stats.coins>=20){
+              this.stats.coins-=20;this.stats.bonusLives+=3;
+              this.saveLocal();this.saveCloud(true);this.sound('merge');
+            }else this.sound('hit');
+            break;
+        }
+        return;
+      }
+    }
+  }
+
+  /* ── CONTROLS ──────────────────────────── */
+  initControls(){
+    if(this.ctrlsOk)return;this.ctrlsOk=true;
+    window.addEventListener('keydown',e=>{
+      this.unlockAudio();
+      /* п.1.6.2.6 — не перехватываем системные шорткаты (F-keys, Ctrl+*, Alt+*) */
+      if(e.ctrlKey||e.altKey||e.metaKey)return;
+      if(this.tutActive){
+        if(e.key==='Enter'||e.key===' '){e.preventDefault();this.advanceTutorial();}
+        return;
+      }
+      if(this.win2048Popup){
+        if(e.key==='Enter'||e.key===' '){
+          e.preventDefault();
+          this.win2048Popup=false;
+          /* п.1.19.3 — попап закрыт → возобновляем геймплей */
+          this.startGP();
+        }
+        return;
+      }
+      if(this.shopOpen){
+        if(e.key==='Escape'){e.preventDefault();this.shopOpen=false;}
+        return;
+      }
+      if(this.menuOpen){
+        if(e.key==='Escape'){e.preventDefault();this.toggleMenu();}
+        return;
+      }
+      if(this.state==='playing'&&!this.animating){
+        const m={ArrowLeft:'L',a:'L',A:'L',ArrowRight:'R',d:'R',D:'R',
+                 ArrowUp:'U',w:'U',W:'U',ArrowDown:'D',s:'D',S:'D'};
+        if(m[e.key]){e.preventDefault();this.move(m[e.key]);}
+        if(e.key==='Escape'){e.preventDefault();this.toggleMenu();}
+      }
+      if(this.state==='gameover'&&e.key==='Enter'){e.preventDefault();this.goAct('restart');}
+    });
+    window.addEventListener('touchstart',e=>{
+      this.unlockAudio();
+      this.txStart=e.touches[0].clientX;this.tyStart=e.touches[0].clientY;
+    },{passive:true});
+    /* п.1.10.2 — блокировать браузерный скролл и pull-to-refresh на touchmove */
+    window.addEventListener('touchmove',e=>{e.preventDefault();},{passive:false});
+    window.addEventListener('touchend',e=>{
+      const t=e.changedTouches[0];
+      const dx=t.clientX-this.txStart,dy=t.clientY-this.tyStart;
+      if(Math.abs(dx)<30&&Math.abs(dy)<30)this.handleTap(t.clientX,t.clientY);
+      else if(this.state==='playing'&&!this.animating&&!this.menuOpen&&!this.shopOpen&&!this.tutActive&&!this.win2048Popup)
+        this.move(Math.abs(dx)>Math.abs(dy)?(dx>0?'R':'L'):(dy>0?'D':'U'));
+    },{passive:true});
+    window.addEventListener('click',e=>this.handleTap(e.clientX,e.clientY));
+    /* п. 1.6.2.7 — suppress context menu and text selection on the canvas */
+    this.canvas.addEventListener('contextmenu',e=>e.preventDefault());
+    document.addEventListener('contextmenu',e=>e.preventDefault());
+    document.addEventListener('selectstart',e=>e.preventDefault());
+  }
+
+  handleTap(cx,cy){
+    if(this.tutActive){this.advanceTutorial();return;}
+    if(this.win2048Popup){
+      this.win2048Popup=false;this.sound('tap');
+      /* п.1.19.3 — попап закрыт → возобновляем геймплей */
+      this.startGP();
+      return;
+    }
+    if(this.shopOpen){this.handleShopClick(cx,cy);return;}
+    if(this.menuOpen){this.handleMenuClick(cx,cy);return;}
+    if(this.state==='gameover'){this.goClick(cx,cy);return;}
+    if(this.menuBtnRect&&this.inRect(cx,cy,this.menuBtnRect)){this.toggleMenu();return;}
+    if(this.authBtnRect&&!this.isAuthorized&&this.inRect(cx,cy,this.authBtnRect)){this.tryAuth();return;}
+  }
+
+  goClick(cx,cy){
+    /* п.4.4 — нет случайного запуска рекламы мимо кнопок */
+    if(this.adPending)return; // реклама уже грузится — игнорируем клики
+    for(const b of this.goButtons){if(this.inRect(cx,cy,b)){this.goAct(b.act);return;}}
+    /* клик мимо кнопок — ничего не делаем */
+  }
+
+  goAct(act){
+    /* Защита от двойного клика и случайных вызовов */
+    if(this.adPending||this.restarting)return;
+
+    if(act==='watchAd'&&!this.usedRevive){
+      /* ── ПУТЬ A: бонус монеты за просмотр рекламы ──────────────────
+         п.4.5   — rewarded запускается ТОЛЬКО по явному действию игрока.
+         п.4.5.1 — кнопка явно указывает: реклама + конкретная награда (+30 🪙).
+         п.4.5.2 — НАГРАДА = монеты (дополнительный бонус к игре).
+                   Воскрешение через RV ЗАПРЕЩЕНО требованиями платформы —
+                   «не должна влиять на возможность продолжить игровой процесс».
+         п.4.7   — пауза геймплея и звука на время рекламы.             */
+      this.adPending=true;
+      this.showRewardedAd(
+        /* onReward — игрок досмотрел → начисляем монеты, остаёмся на game over */
+        ()=>{
+          this.adPending=false;
+          this.usedRevive=true;      // флаг: не показывать кнопку повторно
+          this.stats.coins+=30;
+          this.saveLocal();this.saveCloud(false);
+          /* игрок сам нажмёт «Новая игра» — мы НЕ продолжаем текущую игру */
+        },
+        /* onFail — игрок закрыл rewarded без просмотра → монеты не даём */
+        ()=>{
+          this.adPending=false;
+        }
+      );
+    } else {
+      /* ── ПУТЬ B: игрок нажал "Новая игра" ──────────────────────────
+         п.4.4 — interstitial показывается в логическую паузу (game over).
+         п.4.7 — пауза геймплея и звука.                               */
+      this.adPending=true;
+      this.showInterstitialAd();
+    }
+  }
+
+  inRect(cx,cy,r){return cx>=r.x&&cx<=r.x+r.w&&cy>=r.y&&cy<=r.y+r.h;}
+
+  /* ── GRID ──────────────────────────────── */
+  createGrid(){this.grid=Array.from({length:this.G},()=>Array(this.G).fill(0));}
+
+  spawnTile(){
+    const free=[];
+    for(let y=0;y<this.G;y++)for(let x=0;x<this.G;x++)if(!this.grid[y][x])free.push([x,y]);
+    if(!free.length)return;
+    const[x,y]=free[Math.random()*free.length|0];
+    const v=Math.random()<0.9?2:4;
+    this.grid[y][x]=v;
+    /* Проблема 1: новая плитка получает щит на 300мс от мгновенного урона
+       со стороны падающих врагов, появившихся в тот же момент. */
+    this.vtiles.push({v,x,y,dx:x,dy:y,sx:x,sy:y,ex:x,ey:y,sc:0,ghost:false,
+                       shieldUntil:Date.now()+300});
+  }
+
+  rebuildVT(){
+    const mp=this.pendingMergePos;
+    this.vtiles=[];
+    for(let y=0;y<this.G;y++)for(let x=0;x<this.G;x++){
+      const v=this.grid[y][x];if(!v)continue;
+      const sc=(mp&&mp.has(`${y},${x}`))?1.25:1;
+      this.vtiles.push({v,x,y,dx:x,dy:y,sx:x,sy:y,ex:x,ey:y,sc,ghost:false});
+    }
+    this.pendingMergePos=new Set();
+  }
+
+  /* ── MOVE ──────────────────────────────── */
+  slidePure(arr){
+    const nums=arr.filter(Boolean),out=[];let gain=0,i=0;
+    while(i<nums.length){
+      if(i+1<nums.length&&nums[i]===nums[i+1]){const m=nums[i]*2;out.push(m);gain+=m;i+=2;}
+      else out.push(nums[i++]);
+    }
+    while(out.length<this.G)out.push(0);
+    return{r:out,g:gain};
+  }
+
+  lineMoves(arr,rev){
+    const n=arr.length,idx=arr.map((v,i)=>({v,i}));
+    if(rev)idx.reverse();
+    const nz=idx.filter(c=>c.v),moves=[];let w=0,k=0;
+    while(k<nz.length){
+      const dest=rev?(n-1-w):w;
+      if(k+1<nz.length&&nz[k].v===nz[k+1].v){
+        moves.push({fi:nz[k].i,ti:dest,ghost:false});
+        moves.push({fi:nz[k+1].i,ti:dest,ghost:true});
+        w++;k+=2;
+      }else{moves.push({fi:nz[k].i,ti:dest,ghost:false});w++;k++;}
+    }
+    return moves;
+  }
+
+  move(dir){
+    if(this.animating)return;
+    this.unlockAudio();
+    if(!this.firstSwipeDone)this.firstSwipeDone=true;
+    const newG=this.grid.map(r=>[...r]);
+    let gain=0,merged=false;
+    if(dir==='L'||dir==='R'){
+      const rev=dir==='R';
+      for(let y=0;y<this.G;y++){
+        const row=[...newG[y]];
+        const{r,g}=this.slidePure(rev?[...row].reverse():row);
+        newG[y]=rev?[...r].reverse():r;gain+=g;if(g)merged=true;
+      }
+    }else{
+      const rev=dir==='D';
+      for(let x=0;x<this.G;x++){
+        const col=newG.map(r=>r[x]);
+        const{r,g}=this.slidePure(rev?[...col].reverse():col);
+        const fin=rev?[...r].reverse():r;
+        for(let y=0;y<this.G;y++)newG[y][x]=fin[y];
+        gain+=g;if(g)merged=true;
+      }
+    }
+    if(JSON.stringify(newG)===JSON.stringify(this.grid))return;
+    this.score+=gain;
+    if(this.score>this.stats.best){this.stats.best=this.score;localStorage.setItem('best2048d',this.stats.best);}
+    /* Coins: 1 per 100 points (NEW FEATURE) */
+    const newBase=Math.floor(this.score/100);
+    if(newBase>this.coinsBase){
+      this.stats.coins+=(newBase-this.coinsBase);
+      this.coinsBase=newBase;
+      this.fx.push({type:'coin',life:1});
+    }
+    if(merged){this.stats.merges++;
+      for(const row of newG)for(const v of row)if(v>this.stats.maxTile)this.stats.maxTile=v;}
+    /* NEW: 2048-tile win celebration — bonus coins + leaderboard update, once per game */
+    if(!this.win2048Shown){
+      for(const row of newG)for(const v of row){
+        if(v>=2048){
+          this.win2048Shown=true;this.win2048Popup=true;
+          /* п.1.19.3 — попап паузирует геймплей */
+          this.stopGP();
+          this.stats.coins+=20;
+          this.saveLocal();this.saveCloud(true);this.saveLB();
+          this.sound('win');
+        }
+      }
+    }
+    this.pendingGrid=newG;this.animating=true;this.animProg=0;
+    this.prepAnim(dir);this.sound(merged?'merge':'swipe');
+  }
+
+  prepAnim(dir){
+    const tiles=[],mp=new Set();
+    const proc=(arr,isRow,li,rev)=>{
+      const moves=this.lineMoves(arr,rev);
+      for(const m of moves){
+        const t={v:arr[m.fi],sx:isRow?m.fi:li,sy:isRow?li:m.fi,
+                 ex:isRow?m.ti:li,ey:isRow?li:m.ti,sc:1,ghost:m.ghost};
+        t.dx=t.sx;t.dy=t.sy;tiles.push(t);
+        if(!m.ghost&&moves.some(g=>g.ghost&&g.ti===m.ti))mp.add(`${t.ey},${t.ex}`);
+      }
+    };
+    if(dir==='L'||dir==='R'){for(let y=0;y<this.G;y++)proc(this.grid[y],true,y,dir==='R');}
+    else{for(let x=0;x<this.G;x++)proc(this.grid.map(r=>r[x]),false,x,dir==='D');}
+    this.vtiles=tiles;this.pendingMergePos=mp;
+  }
+
+  /* ── ENEMIES ───────────────────────────── */
+  spawnEnemy(){
+    const t=this.gameTime/1000;
+    let pool;
+    if(t<30)       pool=[[2,70],[4,25],[8,5]];
+    else if(t<60)  pool=[[2,50],[4,35],[8,15]];
+    else if(t<120) pool=[[4,45],[8,35],[16,20]];
+    else           pool=[[4,30],[8,35],[16,25],[32,10]];
+    let roll=Math.random()*100,val=pool.at(-1)[0];
+    for(const[v,c]of pool){roll-=c;if(roll<=0){val=v;break;}}
+
+    /* NEW (bug fix): avoid stacking multiple enemies in the same column
+       near the spawn area — pick columns that are currently clear up top */
+    const busy=new Set();
+    for(const e of this.enemies) if(e.y < this.cSize*1.5) busy.add(e.col);
+    let candidates=[];
+    for(let c=0;c<this.G;c++) if(!busy.has(c)) candidates.push(c);
+    if(!candidates.length) return; // all columns busy — skip this spawn tick
+
+    const col=candidates[Math.floor(Math.random()*candidates.length)];
+    this.enemies.push({
+      col,
+      y:-this.cSize*0.6,baseVal:val,val,
+      spd:this.eSpeed,lastRow:-2,
+      /* Проблема 4: отдельный личный таймер каждого врага для случайного
+         прироста числа, пока он падает (см. updateEnemies) */
+      rollTimer:0,randBonus:0
+    });
+  }
+
+  updateEnemies(dt){
+    const sz=this.cSize*0.55;
+    /* Проблема 4а: число, С КОТОРЫМ враг появляется, растёт в общем —
+       по единому времени текущего раунда (this.gameTime), одинаково
+       для всех врагов на экране разом. */
+    const roundBonus=Math.floor(this.gameTime/4000);
+    for(let i=this.enemies.length-1;i>=0;i--){
+      const e=this.enemies[i];
+      /* Проблема 4б: пока враг падает, раз в 3 секунды его личной
+         жизни есть шанс 50/50 получить +1 к своему числу — случайно
+         и независимо от других врагов. */
+      e.rollTimer+=dt;
+      while(e.rollTimer>=3000){
+        e.rollTimer-=3000;
+        if(Math.random()<0.5)e.randBonus++;
+      }
+      e.val=Math.min(e.baseVal+roundBonus+e.randBonus,128);
+      e.y+=e.spd*dt/1000;
+      const cy=e.y+sz/2,row=Math.floor((cy-this.bY)/this.cSize);
+      const prev=e.lastRow;e.lastRow=row;
+      let hit=false;
+      for(let r=prev+1;r<=row&&!hit;r++){
+        if(r<0||r>=this.G)continue;
+        const cv=this.grid[r][e.col];if(cv<=0)continue;
+        /* Проблема 1: плитка под щитом (первые 300мс после появления)
+           отражает врага без урона, как будто она сильнее. */
+        const vt=this.vtiles.find(t=>t.x===e.col&&t.y===r);
+        const shielded=vt&&vt.shieldUntil&&Date.now()<vt.shieldUntil;
+        hit=true;
+        if(shielded||e.val<cv){
+          this.fx.push({type:shielded?'shieldHit':'deflect',gx:e.col,gy:r,life:1});
+          this.sound('deflect');
+        }else{
+          const nv=cv-e.val;
+          this.grid[r][e.col]=Math.max(0,nv);
+          this.fx.push({type:'hit',gx:e.col,gy:r,life:1});
+          if(nv<=0){
+            this.vtiles=this.vtiles.filter(t=>!(t.x===e.col&&t.y===r));
+            this.sound('lifeloss');this.loseLife();
+          }else{
+            for(const vt2 of this.vtiles)if(vt2.x===e.col&&vt2.y===r)vt2.v=nv;
+            this.sound('hit');
+          }
+          this.saveSession();
+        }
+        this.enemies.splice(i,1);
+      }
+      if(!hit&&e.y>this.H+100)this.enemies.splice(i,1);
+    }
+  }
+
+  loseLife(){
+    /* Фикс бонусных сердец: бонусные жизни из магазина выдаются ОДИН РАЗ,
+       наперёд, при старте раунда (см. startGame → roundStartBonusHearts),
+       максимум 3 за раунд. Поэтому здесь просто обычная потеря жизни —
+       никакого дополнительного списания из stats.bonusLives во время
+       боя больше не происходит (раньше это позволяло потратить весь
+       купленный запас, сколько бы его ни было, за один раунд). */
+    this.lives=Math.max(0,this.lives-1);
+    this.fx.push({type:'flash',life:1});
+    if(this.lives<=0){
+      this.endGame();return;
+    }
+    this.checkNoTiles();this.saveSession();
+  }
+
+  updateFX(dt){
+    for(let i=this.fx.length-1;i>=0;i--){
+      this.fx[i].life-=dt/380;if(this.fx[i].life<=0)this.fx.splice(i,1);}
+  }
+
+  /* ── UPDATE ────────────────────────────── */
+  update(dt){
+    if(this.tutActive){this.tutTime+=dt;return;}
+    /* Проблема 2/3: пока меню, магазин или попап открыты — игра полностью
+       на паузе (gameTime и eTimer не растут). Так как магазин теперь
+       доступен только между раундами (см. isRoundActive), эта пауза
+       больше не может скрыто "копить" тяжёлых врагов во время раунда. */
+    if(this.state!=='playing'||this.menuOpen||this.shopOpen||this.win2048Popup){
+      /* сбрасываем метку последнего кадра, чтобы после паузы dt не был
+         "скачком" и анимации/логика не вели себя как будто прошло 0мс
+         одномоментно — страховка от побочных эффектов паузы */
+      return;
+    }
+    /* Новый фикс: таймер раунда (gameTime) НЕ тикает, пока игрок не
+       сделал первый свайп после "Новой игры". Раньше таймер шёл сразу
+       после старта, и если игрок несколько секунд разглядывал поле
+       перед первым ходом, gameTime успевал вырасти — из-за чего самые
+       первые враги спавнились уже прокачанными (см. roundBonus в
+       updateEnemies). Теперь gameTime растёт только во время раунда. */
+    if(this.firstSwipeDone)this.gameTime+=dt;
+    if(this.animating){
+      this.animProg=Math.min(this.animProg+dt,this.animT);
+      const t=this.animProg/this.animT,et=1-Math.pow(1-t,3);
+      for(const tile of this.vtiles){
+        tile.dx=tile.sx+(tile.ex-tile.sx)*et;
+        tile.dy=tile.sy+(tile.ey-tile.sy)*et;
+        if(tile.ghost)tile.sc=Math.max(0,1-et);
+      }
+      if(t>=1){
+        this.grid=this.pendingGrid;this.rebuildVT();this.spawnTile();
+        this.animating=false;this.saveSession();this.checkNoTiles();
+      }
+      /* Проблема 5: раньше здесь был return ДО блока eTimer/spawnEnemy —
+         таймер появления врагов не рос, пока шла анимация слияния плиток
+         (110мс на каждый ход). При частом быстром вводе игра почти всё
+         время находилась в animating=true, и враги почти не спавнились.
+         Теперь таймер и спавн врагов продолжают работать и во время
+         анимации движения плиток — убираем ранний return. */
+      if(this.firstSwipeDone){
+        this.eTimer+=dt;
+        if(this.eTimer>=this.eInterval){
+          this.eTimer=0;this.spawnEnemy();
+          this.eInterval=Math.max(1200,this.eInterval-18);
+          this.eSpeed=Math.min(120,this.eSpeed+1.2);
+        }
+        this.updateEnemies(dt);
+      }else{
+        for(const e of this.enemies)e.y+=e.spd*dt/1000;
+      }
+      this.updateFX(dt);return;
+    }
+    for(const t of this.vtiles){
+      if(t.sc<1)t.sc=Math.min(1,t.sc+0.10);
+      else if(t.sc>1)t.sc=Math.max(1,t.sc-0.08);
+    }
+    if(this.firstSwipeDone){
+      this.eTimer+=dt;
+      if(this.eTimer>=this.eInterval){
+        this.eTimer=0;this.spawnEnemy();
+        this.eInterval=Math.max(1200,this.eInterval-18);
+        this.eSpeed=Math.min(120,this.eSpeed+1.2);
+      }
+      this.updateEnemies(dt);
+    }
+    this.updateFX(dt);
+  }
+
+  /* ── DRAW ──────────────────────────────── */
+  draw(){
+    this.ctx.fillStyle='#1a1a2e';this.ctx.fillRect(0,0,this.W,this.H);
+    /* п.1.6.2.2 — тёмные полосы вне активного поля на ultrawide экранах */
+    if(this.effX>0){
+      this.ctx.fillStyle='#0a0a1a';
+      this.ctx.fillRect(0,0,this.effX,this.H);
+      this.ctx.fillRect(this.W-this.effX,0,this.effX,this.H);
+    }
+    if(this.state==='loading'){this.drawLoading();return;}
+    this.drawBoard();this.drawTiles();this.drawEnemies();this.drawFX();this.drawHUD();
+    this.drawSideBanners();
+    if(this.state==='gameover')this.drawGameOver();
+    if(this.tutActive&&this.state==='playing')this.drawTutorial();
+    if(this.menuOpen)this.drawMenu();
+    if(this.shopOpen)this.drawShop();
+    if(this.win2048Popup)this.drawWinPopup();
+  }
+
+  drawLoading(){
+    const ctx=this.ctx,fs=Math.round(Math.min(this.W*0.08,42));
+    ctx.textAlign='center';ctx.textBaseline='middle';
+    ctx.fillStyle='#ccccee';ctx.font=`bold ${fs}px Arial`;
+    ctx.fillText(this.t('gameTitle'),this.W/2,this.H/2-fs);
+    ctx.fillStyle='#6666aa';ctx.font=`${Math.round(fs*0.48)}px Arial`;
+    ctx.fillText(this.t('loading'),this.W/2,this.H/2+fs*0.4);
+  }
+
+  drawHUD(){
+    const ctx=this.ctx,pad=12,fs=Math.max(12,Math.min(21,this.W*0.050));
+    /* п.1.6.2.2 — HUD привязан к границам активной области */
+    const lpad=this.effX+pad;            // левый отступ внутри effW
+    const rpad=this.effX+this.effW-pad;  // правый отступ внутри effW
+    const lh=fs*0.62;
+
+    /* ── Menu button (top-left) ── */
+    const mbS=Math.round(fs*1.55);
+    ctx.fillStyle='#2a2a55';rr(ctx,lpad,pad,mbS,mbS,6);ctx.fill();
+    ctx.fillStyle='#aaaacc';ctx.font=`bold ${Math.round(fs*0.82)}px Arial`;
+    ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('≡',lpad+mbS/2,pad+mbS/2);
+    this.menuBtnRect={x:lpad,y:pad,w:mbS,h:mbS};
+
+    /* ── Score / Best (left column, below menu row) ── */
+    const sX=lpad+mbS+10;ctx.textAlign='left';ctx.textBaseline='top';
+    ctx.fillStyle='#7779aa';ctx.font=`${Math.round(fs*0.55)}px Arial`;ctx.fillText(this.t('score'),sX,pad);
+    ctx.fillStyle='#fff';ctx.font=`bold ${fs}px Arial`;ctx.fillText(this.score,sX,pad+lh);
+
+    const bX=sX+this.W*0.22;
+    ctx.fillStyle='#7779aa';ctx.font=`${Math.round(fs*0.55)}px Arial`;ctx.fillText(this.t('best'),bX,pad);
+    ctx.fillStyle='#ffd700';ctx.font=`bold ${fs}px Arial`;ctx.fillText(this.stats.best,bX,pad+lh);
+
+    /* ── Timer (top-center) ── */
+    const secs=(this.gameTime/1000)|0;
+    ctx.textAlign='center';ctx.fillStyle='#444666';ctx.font=`${Math.round(fs*0.52)}px Arial`;
+    ctx.fillText(`${(secs/60)|0}:${String(secs%60).padStart(2,'0')}`,this.W/2,pad);
+
+    /* ── Right column: hearts → coins → name → [auth] ── */
+    const hfs=Math.max(18,Math.min(30,fs*1.25));
+    const gap=Math.max(4,fs*0.22);
+    ctx.textAlign='right';ctx.textBaseline='top';
+
+    let ry=pad;
+    /* Фикс бонусных сердец: базовый лимит жизней раунда теперь может
+       быть больше 3 (3 базовых + до 3 из купленного запаса, выданных
+       при старте раунда) — считаем пустые "потерянные" сердца от
+       реального стартового максимума этого раунда, а не от жёсткой "3". */
+    const roundMaxLives=3+(this.roundStartBonusHearts||0);
+    const hStr='❤'.repeat(this.lives)+'🖤'.repeat(Math.max(0,roundMaxLives-this.lives));
+    ctx.fillStyle='#ff7777';ctx.font=`${Math.round(hfs)}px Arial`;
+    ctx.fillText(hStr,rpad,ry);
+    ry+=hfs*1.05+gap;
+    if(this.roundStartBonusHearts>0){
+      ctx.fillStyle='#ffd76b';ctx.font=`bold ${Math.round(fs*0.55)}px Arial`;
+      ctx.fillText(this.t('bonusUsedLabel',this.roundStartBonusHearts),rpad,ry);
+      ry+=fs*0.75+gap;
+    }
+    if(this.stats.bonusLives>0){
+      ctx.fillStyle='#ffd76b';ctx.font=`bold ${Math.round(fs*0.5)}px Arial`;
+      ctx.fillText(this.t('bonusLabel',this.stats.bonusLives),rpad,ry);
+      ry+=fs*0.7+gap;
+    }
+    const coinFs=Math.max(15,fs*0.92);
+    drawCoinBadge(ctx,rpad,ry,this.stats.coins,coinFs,'right');
+    ctx.textAlign='right';ctx.textBaseline='top';
+    ry+=coinFs*1.15+gap;
+    const nameFs=Math.max(14,fs*0.82);
+    const displayName=this.playerName||this.t('playerDefault');
+    ctx.fillStyle=this.isAuthorized?'#cfe0ff':'#9aa0d0';
+    ctx.font=`bold ${Math.round(nameFs)}px Arial`;
+    ctx.fillText(this.isAuthorized?this.t('verified',displayName):displayName,rpad,ry);
+    ry+=nameFs*1.15+gap*1.4;
+
+    /* Auth button */
+    if(!this.isAuthorized){
+      const aFs=Math.max(11,Math.min(17,fs*0.74));
+      const aW=Math.min(this.effW*0.38,Math.round(aFs*7.0));
+      const aH=Math.round(aFs*1.55);
+      const aX=rpad-aW,aY=ry;
+      if(aY+aH<=this.H-pad){
+        ctx.fillStyle='#2a3a6a';rr(ctx,aX,aY,aW,aH,6);ctx.fill();
+        ctx.strokeStyle='#5577ee';ctx.lineWidth=1.5;rr(ctx,aX,aY,aW,aH,6);ctx.stroke();
+        ctx.fillStyle='#a8c0ff';ctx.font=`bold ${Math.round(aFs*0.78)}px Arial`;
+        ctx.textAlign='center';ctx.textBaseline='middle';
+        ctx.fillText(this.t('signin'),aX+aW/2,aY+aH/2);
+        this.authBtnRect={x:aX,y:aY,w:aW,h:aH};
+      }else this.authBtnRect=null;
+    }else this.authBtnRect=null;
+
+    /* ── Grace hint + controls (п.2.2) ── */
+    if(!this.firstSwipeDone&&this.state==='playing'&&!this.tutActive){
+      ctx.fillStyle='rgba(255,220,80,0.90)';ctx.font=`bold ${Math.round(fs*0.65)}px Arial`;
+      ctx.textAlign='center';ctx.textBaseline='middle';
+      ctx.fillText(this.t('swipeHint'),this.W/2,this.bY-26);
+      const isMobile='ontouchstart' in window;
+      ctx.fillStyle='rgba(160,165,220,0.80)';ctx.font=`${Math.round(fs*0.52)}px Arial`;
+      ctx.fillText(this.t(isMobile?'controlsMobile':'controlsDesktop'),this.W/2,this.bY+this.bSize+16);
+    }
+
+    /* ── Enemy spawn progress bar ── */
+    if(this.firstSwipeDone){
+      const bw=Math.min(this.bSize,this.effW*0.86);
+      const bx=(this.W-bw)/2,by=this.bY-12,prog=Math.min(1,this.eTimer/this.eInterval);
+      ctx.fillStyle='#222244';rr(ctx,bx,by,bw,5,3);ctx.fill();
+      ctx.fillStyle=prog>0.80?'#ff4444':'#3355dd';rr(ctx,bx,by,bw*prog,5,3);ctx.fill();
+    }
+  }
+
+  /* п. 4.6.2 — custom RTB/banner placeholders are prohibited.
+     The Yandex SDK banner (showBannerAdv) is managed entirely by the
+     platform; no custom drawing needed here. Side margins remain for
+     layout spacing but are left visually empty. */
+  drawSideBanners(){/* intentionally empty — SDK handles banner placement */}
+
+  drawBoard(){
+    const ctx=this.ctx,R=Math.min(10,this.cSize*0.10);
+    ctx.shadowColor='rgba(0,0,0,0.5)';ctx.shadowBlur=18;
+    ctx.fillStyle='#0d1330';
+    rr(ctx,this.bX-5,this.bY-5,this.bSize+10,this.bSize+10,R+4);ctx.fill();
+    ctx.shadowBlur=0;
+    for(let y=0;y<this.G;y++)for(let x=0;x<this.G;x++){
+      ctx.fillStyle='#182050';
+      rr(ctx,this.bX+x*this.cSize+3,this.bY+y*this.cSize+3,this.cSize-6,this.cSize-6,R);ctx.fill();
+    }
+  }
+
+  drawTiles(){
+    const ctx=this.ctx,GAP=6,R=Math.min(9,this.cSize*0.10);
+    for(const t of this.vtiles){
+      const cw=this.cSize-GAP,sz=cw*t.sc;if(sz<2)continue;
+      const off=(cw-sz)/2;
+      const px=this.bX+t.dx*this.cSize+GAP/2+off;
+      const py=this.bY+t.dy*this.cSize+GAP/2+off;
+      ctx.globalAlpha=t.ghost?Math.max(0,t.sc):1;
+      ctx.fillStyle=this.tileColor(t.v);
+      rr(ctx,px,py,sz,sz,R*Math.max(0.5,t.sc));ctx.fill();
+      if(sz>14){
+        const digs=String(t.v).length;
+        const fz=sz*(digs<=2?0.40:digs===3?0.30:0.22);
+        ctx.fillStyle=t.v<=4?'#5a4030':'#fff';
+        ctx.font=`bold ${Math.round(fz)}px Arial`;
+        ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(t.v,px+sz/2,py+sz/2);
+      }
+      /* Проблема 1: тонкая синяя оболочка на плитке, пока активен щит */
+      if(t.shieldUntil&&Date.now()<t.shieldUntil){
+        const remain=(t.shieldUntil-Date.now())/300;
+        ctx.strokeStyle=`rgba(80,180,255,${0.55+0.35*remain})`;
+        ctx.lineWidth=Math.max(2,sz*0.045);
+        ctx.shadowColor='#4db3ff';ctx.shadowBlur=6;
+        rr(ctx,px+ctx.lineWidth/2,py+ctx.lineWidth/2,sz-ctx.lineWidth,sz-ctx.lineWidth,R*Math.max(0.5,t.sc));
+        ctx.stroke();ctx.shadowBlur=0;
+      }
+      ctx.globalAlpha=1;
+    }
+  }
+
+  drawEnemies(){
+    const ctx=this.ctx,sz=this.cSize*0.55,R=Math.min(8,sz*0.13);
+    for(const e of this.enemies){
+      const px=this.bX+e.col*this.cSize+this.cSize*0.225,py=e.y;
+      ctx.shadowColor='#ff2211';ctx.shadowBlur=12;
+      ctx.fillStyle='#280505';rr(ctx,px,py,sz,sz,R);ctx.fill();ctx.shadowBlur=0;
+      ctx.strokeStyle='#bb1111';ctx.lineWidth=2;rr(ctx,px,py,sz,sz,R);ctx.stroke();
+      const digs=String(e.val).length;
+      ctx.fillStyle='#ff9999';
+      ctx.font=`bold ${Math.round(sz*(digs<=2?0.38:digs===3?0.28:0.22))}px Arial`;
+      ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(e.val,px+sz/2,py+sz/2);
+      ctx.fillStyle='#ff5555';ctx.font=`bold ${Math.round(sz*0.24)}px Arial`;
+      ctx.textAlign='left';ctx.textBaseline='top';ctx.fillText('−',px+3,py+2);
+    }
+  }
+
+  drawFX(){
+    const ctx=this.ctx,R=Math.min(9,this.cSize*0.10);
+    for(const f of this.fx){
+      const a=Math.max(0,f.life);
+      if(f.type==='hit'){
+        ctx.fillStyle=`rgba(255,65,15,${a*0.65})`;
+        rr(ctx,this.bX+f.gx*this.cSize+3,this.bY+f.gy*this.cSize+3,this.cSize-6,this.cSize-6,R);ctx.fill();
+      }else if(f.type==='deflect'){
+        ctx.fillStyle=`rgba(80,255,120,${a*0.60})`;
+        rr(ctx,this.bX+f.gx*this.cSize+3,this.bY+f.gy*this.cSize+3,this.cSize-6,this.cSize-6,R);ctx.fill();
+        ctx.strokeStyle=`rgba(80,255,120,${a*0.80})`;ctx.lineWidth=2;
+        rr(ctx,this.bX+f.gx*this.cSize+3,this.bY+f.gy*this.cSize+3,this.cSize-6,this.cSize-6,R);ctx.stroke();
+      }else if(f.type==='shieldHit'){
+        /* Проблема 1: вспышка синего щита, когда он отразил врага */
+        ctx.fillStyle=`rgba(80,180,255,${a*0.55})`;
+        rr(ctx,this.bX+f.gx*this.cSize+3,this.bY+f.gy*this.cSize+3,this.cSize-6,this.cSize-6,R);ctx.fill();
+        ctx.strokeStyle=`rgba(120,210,255,${a*0.90})`;ctx.lineWidth=2.5;
+        rr(ctx,this.bX+f.gx*this.cSize+3,this.bY+f.gy*this.cSize+3,this.cSize-6,this.cSize-6,R);ctx.stroke();
+      }else if(f.type==='flash'){
+        ctx.fillStyle=`rgba(255,0,0,${a*0.22})`;ctx.fillRect(0,0,this.W,this.H);
+      }else if(f.type==='coin'){
+        /* Floating coin popup near score (drawn icon, not emoji) */
+        const pad=12,fs=Math.max(12,Math.min(21,this.W*0.050));
+        ctx.globalAlpha=a;
+        ctx.fillStyle='#ffd700';ctx.font=`bold ${Math.round(fs*0.8)}px Arial`;
+        ctx.textAlign='left';ctx.textBaseline='top';
+        const yy=pad+fs*1.5+(1-a)*14;
+        /* выравниваем по левой колонке HUD (lpad = effX+pad) */
+        const xx=this.effX+pad+Math.round(fs*1.55)+10;
+        const w=ctx.measureText('+1').width;
+        ctx.fillText('+1',xx,yy);
+        drawCoinIcon(ctx,xx+w+Math.round(fs*0.45),yy+fs*0.4,fs*0.4);
+        ctx.globalAlpha=1;
+      }else if(f.type==='bonus'){
+        ctx.fillStyle=`rgba(255,215,0,${a*0.20})`;ctx.fillRect(0,0,this.W,this.H);
+      }
+    }
+  }
+
+  /* ── TUTORIAL ──────────────────────────── */
+  drawTutorial(){
+    const ctx=this.ctx,cx=this.W/2,fs=Math.max(12,Math.min(16,this.W*0.038));
+    const steps=this.t('tutSteps');
+    const si=Math.min(this.tutStep,steps.length-1);
+    const step=steps[si];
+    const spot=TUT_SPOTS[si]||'none';
+
+    /* Overlay */
+    if(spot==='board'){
+      ctx.fillStyle='rgba(0,0,0,0.72)';ctx.fillRect(0,0,this.W,this.H);
+      ctx.strokeStyle='#ffd700';ctx.lineWidth=3;ctx.shadowColor='#ffd700';ctx.shadowBlur=14;
+      rr(ctx,this.bX-7,this.bY-7,this.bSize+14,this.bSize+14,14);ctx.stroke();ctx.shadowBlur=0;
+    }else if(spot==='top'){
+      const sx=this.bX,sy=2,sw=this.bSize,sh=this.bY-8;
+      ctx.save();ctx.beginPath();ctx.rect(0,0,this.W,this.H);
+      ctx.moveTo(sx+10,sy);ctx.arcTo(sx,sy,sx,sy+10,10);ctx.lineTo(sx,sy+sh-10);
+      ctx.arcTo(sx,sy+sh,sx+10,sy+sh,10);ctx.lineTo(sx+sw-10,sy+sh);
+      ctx.arcTo(sx+sw,sy+sh,sx+sw,sy+sh-10,10);ctx.lineTo(sx+sw,sy+10);
+      ctx.arcTo(sx+sw,sy,sx+sw-10,sy,10);ctx.closePath();
+      ctx.fillStyle='rgba(0,0,0,0.84)';ctx.fill('evenodd');
+      ctx.strokeStyle='#ff6644';ctx.lineWidth=2.5;ctx.shadowColor='#ff4422';ctx.shadowBlur=12;
+      rr(ctx,sx,sy,sw,sh,10);ctx.stroke();ctx.shadowBlur=0;ctx.restore();
+    }else if(spot==='lives'){
+      const lh2=fs*0.60,sx=this.W*0.48,sy=10,sw=this.W-sx-10,sh=lh2*2+fs+16;
+      ctx.save();ctx.beginPath();ctx.rect(0,0,this.W,this.H);
+      ctx.moveTo(sx+8,sy);ctx.arcTo(sx,sy,sx,sy+8,8);ctx.lineTo(sx,sy+sh-8);
+      ctx.arcTo(sx,sy+sh,sx+8,sy+sh,8);ctx.lineTo(sx+sw-8,sy+sh);
+      ctx.arcTo(sx+sw,sy+sh,sx+sw,sy+sh-8,8);ctx.lineTo(sx+sw,sy+8);
+      ctx.arcTo(sx+sw,sy,sx+sw-8,sy,8);ctx.closePath();
+      ctx.fillStyle='rgba(0,0,0,0.84)';ctx.fill('evenodd');
+      ctx.strokeStyle='#ffd700';ctx.lineWidth=2.5;ctx.shadowColor='#ffd700';ctx.shadowBlur=12;
+      rr(ctx,sx,sy,sw,sh,8);ctx.stroke();ctx.shadowBlur=0;ctx.restore();
+    }else{
+      ctx.fillStyle='rgba(0,0,0,0.86)';ctx.fillRect(0,0,this.W,this.H);
+    }
+
+    /* Card */
+    const cW=Math.min(320,this.W-28);
+    const illH=68,btnH=Math.round(fs*1.5);
+    const cardH=16+fs*1.45+step.lines.length*fs*1.1+10+illH+14+10+btnH+14;
+    const cardY=Math.max(14,this.H-cardH-18);
+    const cardX=cx-cW/2;
+    ctx.fillStyle='#141432';rr(ctx,cardX,cardY,cW,cardH,14);ctx.fill();
+    ctx.strokeStyle='#4444aa';ctx.lineWidth=1.5;rr(ctx,cardX,cardY,cW,cardH,14);ctx.stroke();
+
+    let cy=cardY+16;
+    ctx.textAlign='center';ctx.textBaseline='top';
+    ctx.fillStyle='#ffd700';ctx.font=`bold ${Math.round(fs*1.06)}px Arial`;
+    ctx.fillText(step.title,cx,cy);cy+=fs*1.5;
+    ctx.fillStyle='#ccccee';ctx.font=`${Math.round(fs*0.84)}px Arial`;
+    for(const line of step.lines){ctx.fillText(line,cx,cy);cy+=fs*1.1;}
+    cy+=10;
+
+    this.drawTutIllust(ctx,si,cardX+14,cy,cW-28,illH);cy+=illH+14;
+
+    /* Dots */
+    const dN=steps.length,dSp=16,dX0=cx-(dN-1)*dSp/2;
+    for(let i=0;i<dN;i++){
+      ctx.fillStyle=i===si?'#ffd700':'#2a2a55';
+      ctx.beginPath();ctx.arc(dX0+i*dSp,cy+4,i===si?5:3,0,Math.PI*2);ctx.fill();
+    }
+    cy+=14;
+
+    /* Button */
+    const isLast=si>=steps.length-1;
+    const bTxt=isLast?this.t('tutPlay'):this.t('tutNext');
+    const bW=Math.min(185,cW-28),bX=cx-bW/2;
+    ctx.fillStyle=isLast?'#1a4a1a':'#1a2a5a';
+    rr(ctx,bX,cy,bW,btnH,8);ctx.fill();
+    ctx.strokeStyle=isLast?'#44bb44':'#4477cc';ctx.lineWidth=1.5;
+    rr(ctx,bX,cy,bW,btnH,8);ctx.stroke();
+    ctx.fillStyle='#fff';ctx.font=`bold ${Math.round(fs*0.78)}px Arial`;
+    ctx.textBaseline='middle';ctx.fillText(bTxt,cx,cy+btnH/2);
+    ctx.fillStyle='#2a2a55';ctx.font=`${Math.round(fs*0.48)}px Arial`;
+    ctx.textBaseline='bottom';
+    ctx.fillText(this.t('tutCounter',si+1,steps.length),cx,cardY+cardH-5);
+  }
+
+  drawTutIllust(ctx,si,x,y,w,h){
+    const t=this.tutTime/1000,cxL=x+w/2,cyL=y+h/2;
+    const cs=Math.min(h*0.44,w*0.09);
+    ctx.save();ctx.beginPath();ctx.rect(x,y,w,h);ctx.clip();
+
+    if(si===0){
+      /* Welcome: parade of tiles */
+      const vals=[2,4,8,16,32,64];const sp=w/(vals.length+1);
+      vals.forEach((v,i)=>{
+        const tx=x+(i+1)*sp,bounce=Math.sin(t*2+i*0.9)*3,sc=0.72+Math.sin(t+i*0.7)*0.14;
+        const sz=cs*sc;
+        ctx.fillStyle=this.tileColor(v);rr(ctx,tx-sz/2,cyL-sz/2+bounce,sz,sz,4);ctx.fill();
+        ctx.fillStyle=v<=4?'#5a4030':'#fff';ctx.font=`bold ${Math.round(sz*0.45)}px Arial`;
+        ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(v,tx,cyL+bounce);
+      });
+    }else if(si===1){
+      /* Move: directional arrows */
+      const pulse=(Math.sin(t*2.5)+1)/2;
+      [[-1,0,'←'],[1,0,'→'],[0,-1,'↑'],[0,1,'↓']].forEach(([dx,dy,lbl])=>{
+        ctx.fillStyle=`rgba(100,180,255,${0.45+pulse*0.55})`;
+        ctx.font=`bold ${Math.round(cs*1.3)}px Arial`;ctx.textAlign='center';ctx.textBaseline='middle';
+        ctx.fillText(lbl,cxL+dx*(w*0.28+pulse*10),cyL+dy*(h*0.4+pulse*10));
+      });
+      ctx.fillStyle=this.tileColor(8);rr(ctx,cxL-cs/2,cyL-cs/2,cs,cs,4);ctx.fill();
+      ctx.fillStyle='#fff';ctx.font=`bold ${Math.round(cs*0.5)}px Arial`;
+      ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('8',cxL,cyL);
+    }else if(si===2){
+      /* Merge: two tiles combining */
+      const p=(Math.sin(t*1.5)+1)/2,gap=cs*1.9*(1-p*0.88);
+      [-1,1].forEach(side=>{
+        const tx=cxL+side*gap;
+        ctx.fillStyle=this.tileColor(2);rr(ctx,tx-cs/2,cyL-cs/2,cs,cs,4);ctx.fill();
+        ctx.fillStyle='#5a4030';ctx.font=`bold ${Math.round(cs*0.5)}px Arial`;
+        ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('2',tx,cyL);
+      });
+      if(p>0.76){
+        const al=(p-0.76)/0.24;ctx.globalAlpha=al;
+        const ms=cs*(1+al*0.28);ctx.fillStyle=this.tileColor(4);
+        rr(ctx,cxL-ms/2,cyL-ms/2,ms,ms,4);ctx.fill();
+        ctx.fillStyle='#5a4030';ctx.globalAlpha=1;
+        ctx.font=`bold ${Math.round(ms*0.5)}px Arial`;ctx.fillText('4',cxL,cyL);
+      }
+    }else if(si===3){
+      /* Enemy: deflect vs hit */
+      const half=w/2;
+      /* Left: weak (2) vs strong (16) → deflect ✓ */
+      const lx=x+half*0.5,ey1=y+((t*0.55)%1)*h,esz1=cs*0.65;
+      ctx.fillStyle='#1f0606';rr(ctx,lx-esz1/2,ey1-esz1/2,esz1,esz1,4);ctx.fill();
+      ctx.strokeStyle='#bb1111';ctx.lineWidth=1.5;rr(ctx,lx-esz1/2,ey1-esz1/2,esz1,esz1,4);ctx.stroke();
+      ctx.fillStyle='#ff9999';ctx.font=`bold ${Math.round(esz1*0.5)}px Arial`;
+      ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('2',lx,ey1);
+      ctx.fillStyle=this.tileColor(16);rr(ctx,lx-cs/2,y+h*0.66,cs,cs,4);ctx.fill();
+      ctx.fillStyle='#fff';ctx.font=`bold ${Math.round(cs*0.42)}px Arial`;ctx.fillText('16',lx,y+h*0.66+cs/2);
+      ctx.fillStyle='#44ee44';ctx.font=`bold ${Math.round(cs*0.78)}px Arial`;ctx.fillText('✓',lx,y+h*0.92);
+      /* Right: strong (32) vs weak (4) → hit ✗ */
+      const rx=x+half*1.5,ey2=y+((t*0.55+0.48)%1)*h,esz2=cs*0.75;
+      ctx.fillStyle='#1f0606';rr(ctx,rx-esz2/2,ey2-esz2/2,esz2,esz2,4);ctx.fill();
+      ctx.strokeStyle='#bb1111';ctx.lineWidth=1.5;rr(ctx,rx-esz2/2,ey2-esz2/2,esz2,esz2,4);ctx.stroke();
+      ctx.fillStyle='#ff9999';ctx.font=`bold ${Math.round(esz2*0.4)}px Arial`;
+      ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText('32',rx,ey2);
+      ctx.fillStyle=this.tileColor(4);rr(ctx,rx-cs/2,y+h*0.66,cs,cs,4);ctx.fill();
+      ctx.fillStyle='#5a4030';ctx.font=`bold ${Math.round(cs*0.5)}px Arial`;ctx.fillText('4',rx,y+h*0.66+cs/2);
+      ctx.fillStyle='#ff4444';ctx.font=`bold ${Math.round(cs*0.78)}px Arial`;ctx.fillText('✗',rx,y+h*0.92);
+    }else{
+      /* Lives: hearts */
+      const bp=(t*0.85)%1;
+      [0,1,2].forEach(i=>{
+        const hx=cxL+(i-1)*cs*1.55,gone=i===2&&t>1.4;
+        const sc=i===2?1+Math.sin(bp*Math.PI*2)*0.2:1;
+        ctx.globalAlpha=gone?Math.max(0.15,1-(t-1.4)*0.35):1;
+        ctx.font=`${Math.round(cs*sc)}px Arial`;ctx.textAlign='center';ctx.textBaseline='middle';
+        ctx.fillText(gone?'🖤':'❤',hx,cyL);
+      });
+      ctx.globalAlpha=1;
+    }
+    ctx.restore();
+  }
+
+  /* ── MENU ──────────────────────────────── */
+  drawMenu(){
+    const ctx=this.ctx,cx=this.W/2;
+    ctx.fillStyle='rgba(5,5,20,0.93)';ctx.fillRect(0,0,this.W,this.H);
+    this.menuButtons=[];
+
+    /* п.1.10.1 — компактный режим для мобильного landscape (H<450).
+       Без него меню переполняется до 206px на iPhone SE/14.           */
+    const compact=this.W>this.H&&this.H<450;
+    const fs=compact
+      ?Math.max(10,Math.min(13,this.H*0.038))   // ~12 на iPhone SE
+      :Math.max(12,Math.min(18,this.W*0.044));   // обычный режим
+
+    let nBtns=5; // newGame + tutorial + shop + sound + lang
+    if(this.state==='playing')nBtns++;
+    if(!this.isAuthorized)nBtns++;
+
+    const cW=Math.min(compact?260:320,this.W-30),pad=compact?10:15;
+    const avR=Math.round(compact?fs*0.75:fs);
+    const bH=Math.round(compact?fs*1.18:fs*1.42);
+    const bGap=compact?4:8;
+    const btnsH=nBtns*(bH+bGap);
+    const rowH=fs*1.7;
+
+    /* В compact-режиме скрываем таблицу статистики → экономим ~130px  */
+    const profH=compact
+      ?(8+(avR*2+6)+Math.round(fs*1.0)+8)
+      :(12+(avR*2+8)+fs*1.15+3*rowH+6+fs*0.6+14);
+
+    const totalH=Math.min(this.H-16,pad*2+fs*1.6+profH+8+btnsH);
+    const cardY=Math.max(8,Math.min(this.H/2-totalH/2,this.H-totalH-8)),cardX=cx-cW/2;
+
+    ctx.fillStyle='#151532';rr(ctx,cardX,cardY,cW,totalH,16);ctx.fill();
+    ctx.strokeStyle='#3333aa';ctx.lineWidth=1.5;rr(ctx,cardX,cardY,cW,totalH,16);ctx.stroke();
+
+    let cy=cardY+pad;
+    ctx.fillStyle='#ccccee';ctx.font=`bold ${Math.round(fs*1.08)}px Arial`;
+    ctx.textAlign='center';ctx.textBaseline='top';ctx.fillText(this.t('gameTitle'),cx,cy);cy+=fs*1.6;
+
+    /* Profile box */
+    const pW=cW-pad*2,pX=cardX+pad;
+    ctx.fillStyle='#1e1e44';rr(ctx,pX,cy,pW,profH,10);ctx.fill();
+    const pcx=pX+pW/2;let pcy=cy+(compact?8:12);
+
+    const displayName=this.playerName||this.t('playerDefault');
+    ctx.fillStyle=this.isAuthorized?'#224488':'#333355';
+    ctx.beginPath();ctx.arc(pcx,pcy+avR,avR,0,Math.PI*2);ctx.fill();
+    ctx.fillStyle='#fff';ctx.font=`bold ${Math.round(avR)}px Arial`;
+    ctx.textAlign='center';ctx.textBaseline='middle';
+    ctx.fillText(displayName.charAt(0).toUpperCase(),pcx,pcy+avR);pcy+=avR*2+(compact?6:8);
+
+    ctx.fillStyle='#eeeeff';ctx.font=`bold ${Math.round(fs*(compact?0.82:0.92))}px Arial`;ctx.textBaseline='top';
+    ctx.fillText(this.isAuthorized?this.t('verified',displayName):displayName,pcx,pcy);pcy+=fs*1.15;
+
+    /* Статистика — только в полном (portrait) режиме */
+    if(!compact){
+      const si=[
+        ['🏆',this.t('statBest'),this.stats.best],
+        ['🎮',this.t('statGames'),this.stats.gamesPlayed],
+        ['✨',this.t('statMerges'),this.stats.merges],
+        ['🔢',this.t('statMax'),this.stats.maxTile],
+        [null,this.t('coins'),this.stats.coins],
+        ['❤',this.t('bonusStock'),this.stats.bonusLives],
+      ];
+      const colW=pW/2;
+      si.forEach(([ico,lbl,val],i)=>{
+        const sx=pX+(i%2)*colW+colW/2,sy=pcy+Math.floor(i/2)*rowH;
+        ctx.textAlign='center';
+        ctx.fillStyle='#7779aa';ctx.font=`${Math.round(fs*0.49)}px Arial`;
+        ctx.fillText(ico?`${ico} ${lbl}`:lbl,sx,sy);
+        if(ico===null){
+          drawCoinBadge(ctx,sx,sy+fs*0.62,val,fs*0.78,'center');
+          ctx.textAlign='center';ctx.textBaseline='top';
+        }else{
+          ctx.fillStyle='#eeeeff';ctx.font=`bold ${Math.round(fs*0.70)}px Arial`;
+          ctx.fillText(val,sx,sy+fs*0.62);
+        }
+      });
+      pcy+=3*rowH+6;
+      ctx.fillStyle='#3a3a66';ctx.font=`${Math.round(fs*0.47)}px Arial`;ctx.textAlign='center';
+      ctx.fillText(this.t('timeFmt',this.stats.totalTimeSec),pcx,pcy);
+    }
+    cy+=profH+8;
+
+    /* Кнопки */
+    const drawBtn=(label,act,bg,border,extraBg)=>{
+      const bX=cardX+pad;
+      ctx.fillStyle=extraBg||bg;rr(ctx,bX,cy,pW,bH,8);ctx.fill();
+      ctx.strokeStyle=border;ctx.lineWidth=1;rr(ctx,bX,cy,pW,bH,8);ctx.stroke();
+      ctx.fillStyle='#fff';ctx.font=`bold ${Math.round(fs*0.68)}px Arial`;
+      ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(label,cx,cy+bH/2);
+      this.menuButtons.push({x:bX,y:cy,w:pW,h:bH,act});cy+=bH+bGap;
+    };
+
+    if(this.state==='playing')drawBtn(this.t('resume'),'resume','#163016','#44aa44');
+    drawBtn(this.t('newGame'),'newgame','#1a1a44','#4444aa');
+    drawBtn(this.t('showTut'),'tutorial','#1a1a38','#3333aa');
+    /* Проблема 2: магазин недоступен во время раунда — кнопка затемнена */
+    if(this.isRoundActive())
+      drawBtn(this.t('shopTitle'),'shop','#2a2a2a','#555555','#241f1a');
+    else
+      drawBtn(this.t('shopTitle'),'shop','#3a2a10','#cc9933');
+    if(!this.isAuthorized)drawBtn(this.t('signInSave'),'auth','#1a2a44','#4466cc');
+    drawBtn(this.soundOn?this.t('soundOn'):this.t('soundOff'),'sound','#2a1a1a','#664444');
+    drawBtn(this.t('langBtn'),'lang','#1a2a1a','#33aa55');
+  }
+
+  /* ── 2048 WIN CELEBRATION (NEW) ────────────
+     Shown once per game when the player first reaches a 2048 tile.
+     Awards bonus coins and pauses gameplay until dismissed. */
+  drawWinPopup(){
+    const ctx=this.ctx,cx=this.W/2,cy0=this.H/2,fs=Math.max(14,Math.min(28,this.W*0.07));
+    ctx.fillStyle='rgba(5,5,18,0.90)';ctx.fillRect(0,0,this.W,this.H);
+
+    const cW=Math.min(300,this.W-32);
+    const cardH=fs*7.4;
+    const cardX=cx-cW/2,cardY=cy0-cardH/2;
+
+    ctx.fillStyle='#1a1a3a';rr(ctx,cardX,cardY,cW,cardH,16);ctx.fill();
+    ctx.strokeStyle='#ffd700';ctx.lineWidth=2.5;
+    ctx.shadowColor='#ffd700';ctx.shadowBlur=20;
+    rr(ctx,cardX,cardY,cW,cardH,16);ctx.stroke();ctx.shadowBlur=0;
+
+    let cy=cardY+fs*1.0;
+    ctx.textAlign='center';ctx.textBaseline='middle';
+
+    ctx.fillStyle='#ffd700';ctx.font=`bold ${Math.round(fs*1.35)}px Arial`;
+    ctx.fillText(this.t('winTitle'),cx,cy);cy+=fs*1.6;
+
+    /* The 2048 tile itself */
+    const tsz=fs*2.2;
+    ctx.fillStyle=this.tileColor(2048);
+    rr(ctx,cx-tsz/2,cy-tsz/2,tsz,tsz,10);ctx.fill();
+    ctx.fillStyle='#fff';ctx.font=`bold ${Math.round(tsz*0.34)}px Arial`;
+    ctx.fillText('2048',cx,cy);cy+=tsz/2+fs*0.9;
+
+    ctx.fillStyle='#ccccee';ctx.font=`${Math.round(fs*0.78)}px Arial`;
+    ctx.fillText(this.t('winText'),cx,cy);cy+=fs*1.3;
+
+    /* Bonus coins line — drawn coin icon + amount */
+    ctx.fillStyle='#ffd700';ctx.font=`bold ${Math.round(fs*0.8)}px Arial`;
+    const bonusTxt=this.t('winBonus',20).replace(/🪙/,'').trim();
+    const w1=ctx.measureText(bonusTxt).width;
+    ctx.textAlign='left';
+    ctx.fillText(bonusTxt,cx-(w1+fs)/2,cy-fs*0.4);
+    drawCoinIcon(ctx,cx-(w1+fs)/2+w1+fs*0.35,cy,fs*0.42);
+    ctx.textAlign='center';cy+=fs*1.55;
+
+    /* Close button */
+    const bW=Math.min(220,cW-32),bH=Math.round(fs*1.35);
+    const bX=cx-bW/2;
+    ctx.fillStyle='#1a4a1a';rr(ctx,bX,cy-bH/2,bW,bH,8);ctx.fill();
+    ctx.strokeStyle='#44bb44';ctx.lineWidth=1.5;rr(ctx,bX,cy-bH/2,bW,bH,8);ctx.stroke();
+    ctx.fillStyle='#fff';ctx.font=`bold ${Math.round(fs*0.7)}px Arial`;
+    ctx.fillText(this.t('winClose'),cx,cy);
+    this.winButtons=[{x:bX,y:cy-bH/2,w:bW,h:bH,act:'closeWin'}];
+  }
+
+  /* ── SHOP SCREEN (NEW: separate menu, opened via "Магазин" button) ── */
+  drawShop(){
+    const ctx=this.ctx,cx=this.W/2,fs=Math.max(12,Math.min(18,this.W*0.044));
+    ctx.fillStyle='rgba(5,5,20,0.93)';ctx.fillRect(0,0,this.W,this.H);
+    this.shopButtons=[];
+
+    const cW=Math.min(295,this.W-36),pad=15;
+    const bH=Math.round(fs*1.42),itemH=Math.round(fs*2.6);
+    const balH=Math.round(fs*2.6);
+    const totalH=pad*2+fs*1.6+balH+12+itemH*2+10*2+bH+8;
+    const cardY=Math.max(10,this.H/2-totalH/2),cardX=cx-cW/2;
+
+    ctx.fillStyle='#151532';rr(ctx,cardX,cardY,cW,totalH,16);ctx.fill();
+    ctx.strokeStyle='#cc9933';ctx.lineWidth=1.5;rr(ctx,cardX,cardY,cW,totalH,16);ctx.stroke();
+
+    let cy=cardY+pad;
+    ctx.fillStyle='#ffd700';ctx.font=`bold ${Math.round(fs*1.08)}px Arial`;
+    ctx.textAlign='center';ctx.textBaseline='top';ctx.fillText(this.t('shopTitle'),cx,cy);cy+=fs*1.7;
+
+    /* Balance box */
+    const pW=cW-pad*2,pX=cardX+pad;
+    ctx.fillStyle='#1e1e44';rr(ctx,pX,cy,pW,balH,10);ctx.fill();
+    ctx.fillStyle='#7779aa';ctx.font=`${Math.round(fs*0.55)}px Arial`;
+    ctx.fillText(this.t('shopBalance'),cx,cy+fs*0.45);
+    drawCoinBadge(ctx,cx,cy+fs*1.15,this.stats.coins,fs*1.3,'center');
+    cy+=balH+12;
+
+    /* Purchase items */
+    const item=(act,heartsGain,cost,label)=>{
+      const afford=this.stats.coins>=cost;
+      ctx.fillStyle=afford?'#1a3a1a':'#2a1a1a';
+      rr(ctx,pX,cy,pW,itemH,10);ctx.fill();
+      ctx.strokeStyle=afford?'#44bb44':'#663333';ctx.lineWidth=1.5;
+      rr(ctx,pX,cy,pW,itemH,10);ctx.stroke();
+
+      ctx.fillStyle=afford?'#eaffea':'#998888';
+      ctx.font=`bold ${Math.round(fs*0.85)}px Arial`;
+      ctx.textAlign='left';ctx.textBaseline='top';
+      ctx.fillText(label,pX+12,cy+itemH*0.18);
+
+      /* price tag, right-aligned */
+      drawCoinBadge(ctx,pX+pW-12,cy+itemH*0.18,cost,fs*0.85,'right',afford?'#ffd700':'#776633');
+
+      this.shopButtons.push({x:pX,y:cy,w:pW,h:itemH,act,afford});
+      cy+=itemH+10;
+    };
+    item('shop1',1,10, this.t('shopBuy1Full'));
+    item('shop2',3,20, this.t('shopBuy2Full'));
+
+    /* Back button */
+    ctx.fillStyle='#1a1a44';rr(ctx,pX,cy,pW,bH,8);ctx.fill();
+    ctx.strokeStyle='#4444aa';ctx.lineWidth=1;rr(ctx,pX,cy,pW,bH,8);ctx.stroke();
+    ctx.fillStyle='#fff';ctx.font=`bold ${Math.round(fs*0.68)}px Arial`;
+    ctx.textAlign='center';ctx.textBaseline='middle';ctx.fillText(this.t('shopBack'),cx,cy+bH/2);
+    this.shopButtons.push({x:pX,y:cy,w:pW,h:bH,act:'back'});
+  }
+
+  /* ── GAME OVER ─────────────────────────── */
+  drawGameOver(){
+    const ctx=this.ctx,cx=this.W/2,fs=Math.max(14,Math.min(26,this.W*0.062));
+    ctx.fillStyle='rgba(5,5,18,0.92)';ctx.fillRect(0,0,this.W,this.H);
+    ctx.textAlign='center';ctx.textBaseline='middle';
+
+    /* ── Заголовок + счёт ── */
+    let cy=this.H/2-fs*3.8;
+    ctx.fillStyle='#ff5544';ctx.font=`bold ${Math.round(fs*1.22)}px Arial`;
+    ctx.fillText(this.t('gameOver'),cx,cy);cy+=fs*2.0;
+
+    ctx.fillStyle='#ffd700';ctx.font=`bold ${fs}px Arial`;
+    ctx.fillText(this.t('bestFmt',this.stats.best),cx,cy);cy+=fs*1.4;
+
+    ctx.fillStyle='#cccccc';ctx.font=`${Math.round(fs*0.74)}px Arial`;
+    ctx.fillText(this.t('scoreFmt',this.score),cx,cy);cy+=fs*1.8;
+
+    /* ── Таблица лидеров ── */
+    if(this.lbEntries.length&&!this.adPending){
+      ctx.fillStyle='#6666bb';ctx.font=`${Math.round(fs*0.52)}px Arial`;
+      ctx.fillText(this.t('lbTitle'),cx,cy);cy+=fs*0.85;
+      for(const e of this.lbEntries.slice(0,4)){
+        const isMe=e.player?.uniqueID===this.playerId;
+        ctx.fillStyle=isMe?'#ffd700':'#aaaacc';ctx.font=`${Math.round(fs*0.48)}px Arial`;
+        ctx.fillText(`${e.rank}. ${e.player?.publicName||'—'}   ${e.score}`,cx,cy);cy+=fs*0.72;
+      }
+      cy+=fs*0.4;
+    }
+
+    this.goButtons=[];
+    const bw=Math.min(280,this.W*0.78),bh=Math.round(fs*1.3);
+
+    /* ══ СОСТОЯНИЕ: реклама грузится ══════════════════════════════
+       Показываем spinner — кнопки не рендерим, чтобы исключить
+       повторные клики. (п.4.4 — без случайных запусков рекламы)   */
+    if(this.adPending){
+      const spinR=fs*0.9;
+      const t=(Date.now()/600)%(Math.PI*2);
+      ctx.strokeStyle='#ffd700';ctx.lineWidth=3;
+      ctx.beginPath();
+      ctx.arc(cx,cy+spinR,spinR,t,t+Math.PI*1.4);
+      ctx.stroke();
+      cy+=spinR*2+fs*0.6;
+      ctx.fillStyle='#aaaacc';ctx.font=`${Math.round(fs*0.62)}px Arial`;
+      ctx.fillText(this.t('adLoading'),cx,cy);
+      return; // кнопки не рисуем
+    }
+
+    /* ══ СОСТОЯНИЕ: обычный экран game over ════════════════════════ */
+    const gBtn=(lbl,act,bg,br,hint)=>{
+      const bx=cx-bw/2;
+      ctx.fillStyle=bg;rr(ctx,bx,cy,bw,bh,8);ctx.fill();
+      ctx.strokeStyle=br;ctx.lineWidth=1.5;rr(ctx,bx,cy,bw,bh,8);ctx.stroke();
+      ctx.fillStyle='#fff';ctx.font=`bold ${Math.round(fs*0.58)}px Arial`;
+      ctx.textBaseline='middle';ctx.fillText(lbl,cx,cy+bh/2);
+      this.goButtons.push({x:bx,y:cy,w:bw,h:bh,act});
+      cy+=bh+6;
+      /* п.4.5.1 — подсказка под кнопкой: что произойдёт */
+      if(hint){
+        ctx.fillStyle='rgba(160,165,220,0.72)';
+        ctx.font=`${Math.round(fs*0.41)}px Arial`;
+        ctx.textBaseline='top';
+        ctx.fillText(hint,cx,cy);
+      }
+      cy+=hint?fs*0.68:4;
+    };
+
+    /* Кнопка БОНУС МОНЕТ — только если ещё не использовалась за эту партию.
+       п.4.5.1: кнопка явно указывает на рекламу и конкретную награду (+30 🪙).
+       п.4.5.2: НАГРАДА = монеты (доп. бонус), НЕ возможность продолжить игру. */
+    if(!this.usedRevive){
+      gBtn(
+        this.t('adCont'),
+        'watchAd',
+        '#4a3800','#ffd700',
+        this.t('adReviveHint')
+      );
+    }
+
+    /* Кнопка НОВОЙ ИГРЫ — всегда доступна
+       п.4.4: interstitial будет показан в логическую паузу ДО новой игры */
+    gBtn(
+      this.t('newGame'),              // "↺ Новая игра"
+      'restart',
+      '#1e1e44','#4444aa',
+      this.t('adSkipHint')            // "Пропустить → начнётся реклама перед новой игрой"
+    );
+  }
+
+  /* ── LOOP / HELPERS ────────────────────── */
+  loop(t){
+    const dt=Math.min(50,t-(this.lastTime||t));
+    this.lastTime=t;this.update(dt);this.draw();
+    requestAnimationFrame(ts=>this.loop(ts));
+  }
+
+  tileColor(v){
+    const c={2:'#eee4da',4:'#ede0c8',8:'#f2b179',16:'#f59563',32:'#f67c5f',
+             64:'#f65e3b',128:'#edcf72',256:'#edcc61',512:'#edc850',
+             1024:'#edc53f',2048:'#edc22e'};
+    return c[v]||'#3c3a32';
+  }
+}
+
+/* ── START ─────────────────────────────────────────────── */
+const game=new Game();
+/* п.1.3 — звук должен останавливаться при сворачивании страницы */
+document.addEventListener('visibilitychange',()=>{
+  if(document.hidden){
+    game.lastTime=performance.now();
+    /* остановить аудиоконтекст */
+    try{if(game.aud&&game.aud.state==='running')game.aud.suspend();}catch(e){}
+    /* остановить GameplayAPI при уходе в фон */
+    game.stopGP();
+  }else{
+    /* возобновить аудио только если звук включён */
+    try{if(game.aud&&game.aud.state==='suspended'&&game.audOk&&game.soundOn)game.aud.resume();}catch(e){}
+    /* возобновить GameplayAPI если игра активна */
+    /* п.1.19.3 — возобновляем только если нет пауз (меню, туториал, попап) */
+    if(game.state==='playing'&&!game.menuOpen&&!game.shopOpen&&!game.win2048Popup&&!game.tutActive)game.startGP();
+  }
+});
+</script>
+</body>
+</html>
